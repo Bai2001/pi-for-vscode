@@ -1,0 +1,83 @@
+{
+  "name": "pi-for-vscode",
+  "displayName": "pi for VSCode",
+  "description": "在编辑器区分屏打开 pi 终端，并把编辑器上下文注入 pi 系统提示词（个人自用）",
+  "version": "0.2.0",
+  "publisher": "local",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "vscode": "^1.110.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pi-for-vscode.openTerminal",
+        "title": "pi：打开终端会话",
+        "icon": {
+          "light": "media/pi.svg",
+          "dark": "media/pi-dark.svg"
+        }
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "pi-for-vscode.openTerminal",
+          "group": "navigation",
+          "when": "resourceScheme == 'file'"
+        },
+        {
+          "command": "pi-for-vscode.openTerminal",
+          "group": "navigation",
+          "when": "resourceScheme == 'vscode-terminal'"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "pi-for-vscode.openTerminal"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "pi for VSCode",
+      "properties": {
+        "pi-for-vscode.context.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "把活动编辑器的文件与选区注入 pi 系统提示词"
+        },
+        "pi-for-vscode.context.maxLines": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "注入的选区最大行数（超出截断）"
+        },
+        "pi-for-vscode.terminal.splitRight": {
+          "type": "boolean",
+          "default": true,
+          "description": "在编辑器区右侧分屏打开终端（false 则使用默认终端位置）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/vscode": "^1.110.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}

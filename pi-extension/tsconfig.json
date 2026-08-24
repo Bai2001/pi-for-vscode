@@ -1,0 +1,21 @@
+{
+  "//": "pi 扩展的独立 tsconfig：仅用于 VSCode 编辑器类型检查。这些文件运行时由 pi 的 jiti 加载，typebox/SDK 由 pi 环境解析；这里的 paths 仅让编辑器认识它们。SDK 路径带版本哈希，pi 大版本升级后若报类型错误需更新此路径。",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "typeRoots": ["../node_modules/@types"],
+    "paths": {
+      "typebox": ["C:/Users/15953/.pi/agent/npm/node_modules/typebox"],
+      "@earendil-works/pi-coding-agent": [
+        "C:/Users/15953/.vite-plus/packages/@earendil-works/pi-coding-agent/06b7350a-68b9-4bf2-9307-8b9b1204729c/node_modules/@earendil-works/pi-coding-agent"
+      ]
+    }
+  },
+  "include": ["*.ts"]
+}
