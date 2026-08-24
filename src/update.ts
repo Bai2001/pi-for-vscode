@@ -8,7 +8,8 @@ import * as vscode from 'vscode';
 
 /** 扩展发布仓库（GitHub Releases 托管 VSIX） */
 const REPO = 'Bai2001/pi-for-vscode';
-const API_BASE = 'https://api.github.com';
+/** 网页端入口（不用 api.github.com：未认证请求限额仅 60 次/小时，易触发 403） */
+const WEB_BASE = `https://github.com/${REPO}`;
 /** 单次 HTTP 请求超时 */
 const REQUEST_TIMEOUT_MS = 10_000;
 /** GitHub API 要求带 User-Agent */
@@ -76,38 +77,50 @@ function httpsGet(url: string, accept: string, redirects = 5): Promise<Buffer> {
   });
 }
 
-interface ReleaseAsset {
-  name?: string;
-  browser_download_url?: string;
+/** 跟随重定向链，返回最终 URL（只读响应头，不下载响应体） */
+function resolveFinalUrl(url: string, redirects = 5): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': USER_AGENT }, timeout: REQUEST_TIMEOUT_MS }, (res) => {
+      const status = res.statusCode ?? 0;
+      res.resume();
+      if (status >= 300 && status < 400 && res.headers.location && redirects > 0) {
+        resolve(resolveFinalUrl(res.headers.location, redirects - 1));
+      } else if (status === 200) {
+        resolve(url);
+      } else {
+        reject(new Error(`HTTP ${status}`));
+      }
+    });
+    req.on('timeout', () => req.destroy(new Error('请求超时')));
+    req.on('error', reject);
+  });
 }
 
-interface ReleaseJson {
-  tag_name?: string;
-  html_url?: string;
-  assets?: ReleaseAsset[];
-}
-
-function parseRelease(json: ReleaseJson): ReleaseInfo | null {
-  if (!json.tag_name || !json.html_url) return null;
-  const vsix = (json.assets ?? []).find((a) => a.name?.endsWith('.vsix') && a.browser_download_url);
-  return {
-    version: json.tag_name.replace(/^v/, ''),
-    htmlUrl: json.html_url,
-    vsixUrl: vsix?.browser_download_url,
-    vsixName: vsix?.name,
-  };
-}
-
-/** 从 GitHub Releases 拉取最新发布信息。channel=prerelease 时包含预发布。 */
+/**
+ * 拉取最新发布信息。
+ * stable：releases/latest 会 302 到 /releases/tag/<tag>，从重定向地址解析版本；
+ * prerelease：解析 releases.atom 订阅源第一条 entry（含预发布）。
+ * VSIX 下载地址按 CI 打包规则拼接（pi-for-vscode-<version>.vsix）。
+ */
 async function fetchLatestRelease(channel: string): Promise<ReleaseInfo | null> {
+  let tag: string | undefined;
   if (channel === 'prerelease') {
-    // /releases 按时间倒序，第一个即最新（含预发布）
-    const body = await httpsGet(`${API_BASE}/repos/${REPO}/releases?per_page=1`, 'application/vnd.github+json');
-    const list = JSON.parse(body.toString('utf8')) as ReleaseJson[];
-    return list.length > 0 ? parseRelease(list[0]) : null;
+    const body = await httpsGet(`${WEB_BASE}/releases.atom`, 'application/atom+xml');
+    // 取第一条 entry 中的 /releases/tag/<tag> 链接
+    tag = /<entry>[\s\S]*?\/releases\/tag\/([^"<]+)"/.exec(body.toString('utf8'))?.[1];
+  } else {
+    const finalUrl = await resolveFinalUrl(`${WEB_BASE}/releases/latest`);
+    tag = /\/releases\/tag\/([^/]+)$/.exec(finalUrl)?.[1];
   }
-  const body = await httpsGet(`${API_BASE}/repos/${REPO}/releases/latest`, 'application/vnd.github+json');
-  return parseRelease(JSON.parse(body.toString('utf8')) as ReleaseJson);
+  if (!tag) return null;
+  tag = decodeURIComponent(tag);
+  const version = tag.replace(/^v/, '');
+  return {
+    version,
+    htmlUrl: `${WEB_BASE}/releases/tag/${tag}`,
+    vsixUrl: `${WEB_BASE}/releases/download/${tag}/pi-for-vscode-${version}.vsix`,
+    vsixName: `pi-for-vscode-${version}.vsix`,
+  };
 }
 
 /** 下载 VSIX 到临时目录（带进度通知），返回本地路径 */
