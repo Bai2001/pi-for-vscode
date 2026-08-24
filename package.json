@@ -4,11 +4,18 @@
   "description": "在编辑器区分屏打开 pi 终端，并把编辑器上下文注入 pi 系统提示词（个人自用）",
   "version": "0.2.0",
   "publisher": "local",
-  "private": true,
+  "license": "MIT",
   "type": "module",
   "engines": {
     "vscode": "^1.110.0",
     "node": ">=20"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": "12.0.2",
+      "onFail": "download"
+    }
   },
   "categories": [
     "AI",
@@ -70,13 +77,16 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run build",
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "package": "vsce package --allow-missing-repository"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/vscode": "^1.110.0",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.0"
   }
