@@ -27,6 +27,9 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: npm install -g npm@12.0.2
 
+      - name: 配置 npm 镜像源（与 lockfile 中的 resolved 地址一致）
+        run: npm config set registry https://registry.npmmirror.com
+
       - name: 安装依赖
         run: npm ci
 
