@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 打包并发布 Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # package.json 的 devEngines 要求 npm 12，Node 24 自带 npm 11，需先升级
+      - name: 升级 npm
+        run: npm install -g npm@12
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 校验标签与 package.json 版本一致
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::标签 $TAG_VERSION 与 package.json 版本 $PKG_VERSION 不一致"
+            exit 1
+          fi
+
+      - name: 打包 VSIX
+        run: npm run package
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: "*.vsix"
+          generate_release_notes: true
