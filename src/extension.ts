@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { syncPiExtensions } from "./sync-pi-extension.js";
 import { registerUpdateChecker } from "./update.js";
 
 /** 当前工作区的隔离 key（与 pi 扩展端用同一编码：cwd 非字母数字转 -，并转小写） */
@@ -353,6 +354,9 @@ export function activate(context: vscode.ExtensionContext): void {
   writeContext();
   writeDiagnostics();
   writeWorkspaceInfo();
+
+  // 同步 pi 端扩展文件到 ~/.pi/agent/extensions/（版本升级后自动覆盖旧版）
+  void syncPiExtensions(context);
 
   // 自动检查更新（含手动命令注册）
   registerUpdateChecker(context);
