@@ -72,7 +72,8 @@ function readWorkspace(): WorkspaceInfo | undefined {
 /** 把工作区结构渲染为系统提示词片段。 */
 function buildWorkspaceSection(ws: WorkspaceInfo | undefined): string[] {
   if (!ws || ws.folders.length === 0) return [];
-  const cwd = process.cwd();
+  // Windows 路径大小写不敏感（VSCode 写小写 c:\，process.cwd() 是大写 C:\），统一转小写比较
+  const cwdLower = process.cwd().toLowerCase();
   const lines: string[] = [];
   lines.push("## VSCode 工作区");
   if (ws.folders.length === 1) {
@@ -80,7 +81,7 @@ function buildWorkspaceSection(ws: WorkspaceInfo | undefined): string[] {
   } else {
     lines.push(`本窗口是多根工作区，共 ${ws.folders.length} 个根目录:`);
     for (const f of ws.folders) {
-      const isCwd = f.path === cwd;
+      const isCwd = f.path.toLowerCase() === cwdLower;
       lines.push(`- ${f.name} → ${f.path}${isCwd ? " ← 当前 cwd" : ""}`);
     }
     lines.push("");

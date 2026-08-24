@@ -32,6 +32,14 @@ interface DiagnosticsFile {
   roots: RootDiagnostics[];
 }
 
+/** 旧格式（v0.4.x 及以前）：诊断平铺在 diagnostics 字段，无根分组 */
+interface LegacyDiagnosticsFile {
+  updatedAt: number;
+  total: number;
+  truncated: boolean;
+  diagnostics: DiagnosticItem[];
+}
+
 // 与 VSCode 扩展一致的编码：cwd 非字母数字转 -，转小写。
 // pi 进程 cwd = 终端启动目录 = VSCode 工作区第一个根，同一窗口的 pi 进程共享同一目录。
 const DIAGNOSTICS_FILE = join(
@@ -46,11 +54,34 @@ const DIAGNOSTICS_FILE = join(
   "diagnostics.json",
 );
 
+/**
+ * 读取诊断文件。兼容旧格式：旧格式没有 roots 字段（诊断平铺在 diagnostics），
+ * 包成单个「未知根」分组，保证旧扩展 + 新 pi 端组合不报错。
+ */
 function readDiagnostics(): DiagnosticsFile | undefined {
   try {
-    return JSON.parse(
+    const raw = JSON.parse(
       readFileSync(DIAGNOSTICS_FILE, "utf8"),
-    ) as DiagnosticsFile;
+    ) as DiagnosticsFile | LegacyDiagnosticsFile;
+    if (Array.isArray((raw as DiagnosticsFile).roots)) {
+      return raw as DiagnosticsFile;
+    }
+    if (Array.isArray((raw as LegacyDiagnosticsFile).diagnostics)) {
+      const legacy = raw as LegacyDiagnosticsFile;
+      return {
+        updatedAt: legacy.updatedAt,
+        total: legacy.total,
+        truncated: legacy.truncated,
+        roots: [
+          {
+            root: process.cwd(),
+            rootName: "工作区",
+            diagnostics: legacy.diagnostics,
+          },
+        ],
+      };
+    }
+    return undefined;
   } catch {
     return undefined;
   }
