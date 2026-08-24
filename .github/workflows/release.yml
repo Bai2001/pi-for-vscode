@@ -20,11 +20,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
 
-      # package.json 的 devEngines 要求 npm 12，Node 24 自带 npm 11，需先升级
+      # package.json 的 devEngines 要求 npm 12.0.2，Node 24 自带 npm 11。
+      # npm 11 在仓库目录下执行任何命令都会因 devEngines 校验失败，需在仓库目录外升级
       - name: 升级 npm
-        run: npm install -g npm@12
+        working-directory: ${{ runner.temp }}
+        run: npm install -g npm@12.0.2
 
       - name: 安装依赖
         run: npm ci
