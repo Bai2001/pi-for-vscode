@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { registerUpdateChecker } from './update.js';
 
 /** 当前工作区的隔离 key（与 pi 扩展端用同一编码：cwd 非字母数字转 -，并转小写） */
 function workspaceKey(): string {
@@ -243,6 +244,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // 启动时写一次上下文与诊断
   writeContext();
   writeDiagnostics();
+
+  // 自动检查更新（含手动命令注册）
+  registerUpdateChecker(context);
 }
 
 export function deactivate(): void {

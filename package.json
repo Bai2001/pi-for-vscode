@@ -33,6 +33,10 @@
           "light": "media/pi.svg",
           "dark": "media/pi-dark.svg"
         }
+      },
+      {
+        "command": "pi-for-vscode.checkUpdate",
+        "title": "pi：检查更新"
       }
     ],
     "menus": {
@@ -72,6 +76,20 @@
           "type": "boolean",
           "default": true,
           "description": "在编辑器区右侧分屏打开终端（false 则使用默认终端位置）"
+        },
+        "pi-for-vscode.update.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启动时自动检查扩展更新"
+        },
+        "pi-for-vscode.update.channel": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "prerelease"
+          ],
+          "default": "stable",
+          "description": "更新检查频道：stable 仅正式版，prerelease 包含预发布版"
         }
       }
     }
