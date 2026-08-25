@@ -77,15 +77,6 @@
           "default": true,
           "description": "在编辑器区右侧分屏打开终端（false 则使用默认终端位置）"
         },
-        "pi-for-vscode.diagnostics.openMode": {
-          "type": "string",
-          "enum": [
-            "headless",
-            "visible"
-          ],
-          "default": "headless",
-          "markdownDescription": "按需诊断（vscode_get_diagnostics 的 diagnose 参数）的文件打开方式：`headless` 无头加载文档（不弹 tab、不切焦点，适用于绝大多数语言扩展）；`visible` 用预览 tab 打开（兼容只分析可见编辑器的少数扩展，会短暂切换编辑器并自动恢复）"
-        },
         "pi-for-vscode.update.enabled": {
           "type": "boolean",
           "default": true,
