@@ -732,9 +732,10 @@ function renderResult(args: {
   }
 
   if (args.vscodeTotal != null && args.vscodeTotal > 0) {
+    const dup = args.vscodeMatched - args.vscodeUnique;
     lines.push("");
     lines.push(
-      `（VSCode 共报告 ${args.vscodeTotal} 条，其中 ${args.vscodeMatched} 条在此范围内）`,
+      `（VSCode 全工作区共 ${args.vscodeTotal} 条；本次范围内 ${args.vscodeMatched} 条，其中 ${dup} 条与 CLI 重复、${args.vscodeUnique} 条为 VSCode 独有）`,
     );
   }
 
