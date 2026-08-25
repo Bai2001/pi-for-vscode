@@ -2,7 +2,7 @@
   "name": "pi-for-vscode",
   "displayName": "pi for VSCode",
   "description": "在编辑器区分屏打开 pi 终端，并把编辑器上下文注入 pi 系统提示词（个人自用）",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "local",
   "license": "MIT",
   "type": "module",
