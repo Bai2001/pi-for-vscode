@@ -398,8 +398,16 @@ function readVscodeDiagnostics():
 }
 
 // ============ 去重与合并 ============
-function diagKey(d: { file: string; line: number; col: number }): string {
-  return `${d.file}:${d.line}:${d.col}`;
+/** 去重 key：路径必须归一化后再比较。各来源格式不一致——VSCode 桥接文件、
+ * ruff、tsc/vue-tsc 输出相对路径，basedpyright 输出绝对路径，且 Windows
+ * 盘符大小写可能不同（c:\ vs C:\）。统一为「绝对路径 + 正斜杠 + 盘符小写」。 */
+function diagKey(d: { file: string; line: number; col: number }, cwd: string): string {
+  const abs = isAbsolute(d.file) ? d.file : resolve(cwd, d.file);
+  const norm = normPath(abs).replace(
+    /^([A-Z]):\//,
+    (_m, ch: string) => `${ch.toLowerCase()}:/`,
+  );
+  return `${norm}:${d.line}:${d.col}`;
 }
 
 /** 路径归一（Windows 反斜杠统一为 /，便于比较） */
@@ -467,19 +475,16 @@ export default function (pi: ExtensionAPI): void {
 
       const vscode = readVscodeDiagnostics();
 
-      const { merged, cliCount, vscodeCount } = mergeDiagnostics(
-        cliItems,
-        vscode?.items ?? [],
-        files,
-        cwd,
-      );
+      const { merged, cliCount, vscodeMatched, vscodeUnique } =
+        mergeDiagnostics(cliItems, vscode?.items ?? [], files, cwd);
 
       const text = renderResult({
         language,
         cliSource,
         cliError,
         cliCount,
-        vscodeCount,
+        vscodeMatched,
+        vscodeUnique,
         merged,
         files,
         vscodeTotal: vscode?.total,
@@ -492,7 +497,8 @@ export default function (pi: ExtensionAPI): void {
           cliItems: cliItems.length,
           cliError,
           vscodeTotal: vscode?.total ?? 0,
-          vscodeMatched: vscodeCount,
+          vscodeMatched,
+          vscodeUnique,
           merged: merged.length,
         },
       };
@@ -614,7 +620,12 @@ function mergeDiagnostics(
   vscode: VscodeDiagnostic[],
   files: string[] | undefined,
   cwd: string,
-): { merged: CliDiagnostic[]; cliCount: number; vscodeCount: number } {
+): {
+  merged: CliDiagnostic[];
+  cliCount: number;
+  vscodeMatched: number;
+  vscodeUnique: number;
+} {
   const seen = new Set<string>();
   const merged: CliDiagnostic[] = [];
 
@@ -622,22 +633,30 @@ function mergeDiagnostics(
 
   // 先加 CLI（全量、权威），再加 VSCode 独有的（按 key 去重）
   for (const d of cli) {
-    const k = diagKey(d);
+    const k = diagKey(d, cwd);
     if (!seen.has(k)) {
       seen.add(k);
       merged.push(d);
     }
   }
-  let vscodeCount = 0;
+  // vscodeMatched：范围内的全部 VSCode 诊断；vscodeUnique：去重后真正新增的
+  let vscodeMatched = 0;
+  let vscodeUnique = 0;
   for (const d of vscodeFiltered) {
-    const k = diagKey(d);
+    vscodeMatched += 1;
+    const k = diagKey(d, cwd);
     if (!seen.has(k)) {
       seen.add(k);
-      merged.push({ ...d, code: "", source: d.source ?? "vscode" });
+      merged.push({
+        ...d,
+        code: "",
+        message: d.message.split("\n")[0],
+        source: d.source ?? "vscode",
+      });
+      vscodeUnique += 1;
     }
-    vscodeCount += 1;
   }
-  return { merged, cliCount: cli.length, vscodeCount };
+  return { merged, cliCount: cli.length, vscodeMatched, vscodeUnique };
 }
 
 function displayPath(file: string, cwd: string): string {
@@ -652,7 +671,8 @@ function renderResult(args: {
   cliSource: string;
   cliError?: string;
   cliCount: number;
-  vscodeCount: number;
+  vscodeMatched: number;
+  vscodeUnique: number;
   merged: CliDiagnostic[];
   files?: string[];
   vscodeTotal?: number;
@@ -682,7 +702,7 @@ function renderResult(args: {
 
   lines.push("");
   lines.push(
-    `共 ${args.merged.length} 条（CLI ${args.cliCount} 条，VSCode 独有 ${args.vscodeCount} 条，已去重）：`,
+    `共 ${args.merged.length} 条（CLI ${args.cliCount} 条，VSCode 独有 ${args.vscodeUnique} 条，已去重）：`,
   );
 
   const byFile = new Map<string, CliDiagnostic[]>();
@@ -714,7 +734,7 @@ function renderResult(args: {
   if (args.vscodeTotal != null && args.vscodeTotal > 0) {
     lines.push("");
     lines.push(
-      `（VSCode 共报告 ${args.vscodeTotal} 条，其中 ${args.vscodeCount} 条在此范围内）`,
+      `（VSCode 共报告 ${args.vscodeTotal} 条，其中 ${args.vscodeMatched} 条在此范围内）`,
     );
   }
 
