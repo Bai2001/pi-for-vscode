@@ -249,7 +249,7 @@ function buildBasedpyrightArgs(
       bp?.typeCheckingMode &&
       bp.typeCheckingMode !== "recommended" // recommended 与 CLI 默认一致，无需桥接
     ) {
-      const tmp = makeTempPyrightConfig(bp.typeCheckingMode);
+      const tmp = makeTempPyrightConfig(bp.typeCheckingMode, cwd);
       if (tmp) args.push("-p", tmp);
     }
   }
@@ -258,23 +258,37 @@ function buildBasedpyrightArgs(
   return { cmd: "uvx", args: ["basedpyright", ...args] };
 }
 
-/** 解析 ${workspaceFolder} / ${workspaceRoot} 占位符为绝对路径 */
+/** 解析 ${workspaceFolder} / ${workspaceRoot} 占位符为绝对路径。
+ * 裸命令名（如 VSCode 默认的 "python"，无路径分隔符）原样传递，交给
+ * basedpyright 自己按 PATH 解析，不能误拼成工作区相对路径。 */
 function resolveWorkspaceVar(value: string, resource: string | null): string | null {
   if (resource) {
     value = value.replace(/\$\{(workspaceFolder|workspaceRoot)\}/gi, resource);
   }
-  // 仍是相对路径且非空：相对第一个工作区根解析
-  if (!isAbsolute(value) && resource) return resolve(resource, value);
-  if (!isAbsolute(value)) return null;
-  return value;
+  if (isAbsolute(value)) return value;
+  // 裸命令名（如 "python"）：原样传递
+  if (!/[/\\]/.test(value)) return value;
+  // 相对路径：相对工作区根解析
+  if (resource) return resolve(resource, value);
+  return null;
 }
 
-/** 生成仅含 typeCheckingMode 的临时 pyrightconfig.json，返回路径 */
-function makeTempPyrightConfig(typeCheckingMode: string): string | null {
+/** 生成仅含 typeCheckingMode 的临时 pyrightconfig.json，返回路径。
+ * 注意：-p 指定配置文件后，basedpyright 会把「配置文件所在目录」当作项目根，
+ * 只分析其下的文件——临时目录里没有代码，会静默返回 0 条诊断。所以必须在
+ * 临时配置里用绝对路径 include 把工作区目录显式纳入分析范围。 */
+function makeTempPyrightConfig(
+  typeCheckingMode: string,
+  cwd: string,
+): string | null {
   try {
     const dir = mkdtempSync(join(tmpdir(), "pi-pyright-"));
     const file = join(dir, "pyrightconfig.json");
-    writeFileSync(file, JSON.stringify({ typeCheckingMode }), "utf8");
+    writeFileSync(
+      file,
+      JSON.stringify({ typeCheckingMode, include: [cwd] }),
+      "utf8",
+    );
     return file;
   } catch {
     return null;
