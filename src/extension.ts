@@ -455,11 +455,12 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // 退出时清空上下文，避免过期数据被注入
+  // 退出时按设置写开关，避免 reload 后残留 enabled=false 误导 pi 侧注入。
+  // 设置开启时不置 false：扩展 reload 后 onStartupFinished 会自动重新激活并刷新上下文。
   try {
     fs.writeFileSync(
       contextFilePath(),
-      JSON.stringify({ enabled: false, updatedAt: Date.now() }),
+      JSON.stringify({ enabled: contextEnabled, updatedAt: Date.now() }),
       "utf8",
     );
   } catch {
