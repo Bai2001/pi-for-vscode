@@ -10,6 +10,13 @@
 //   配置（typescript.tsdk、basedpyright.analysis.* 等）经 language-config.json
 //   由 VSCode 扩展合并后中转过来作兜底。
 //
+// 执行器探测（先判断有没有，没有就交给包管理器临时执行，不报错）：
+//   TS：项目本地 node_modules bin -> vp dlx / npm exec / pnpm dlx
+//   Vue：同上，但包管理器执行时锁定 typescript@5（TS7 Go 版无 Compiler API，
+//       且新版 JS 线 exports 不再暴露 ./lib/tsc，vue-tsc 启动即崩，须锁 5.x）
+//   Py(basedpyright/ruff)：PATH 直接命令 / .venv -> uvx / pipx run / uv run --with / python -m
+//   都不可用才跳过该项，结果里以 ℹ 提示，不视为失败。
+//
 // 返回时与 VSCode 全局诊断合并去重，互相补足。
 import { execFileSync } from "node:child_process";
 import {
@@ -164,31 +171,111 @@ function nodeRun(
   }
 }
 
+/** 判断命令是否在 PATH 中（where / which） */
+function hasCommand(cmd: string): boolean {
+  const probe = process.platform === "win32" ? "where" : "which";
+  try {
+    execFileSync(probe, [cmd], { stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * JS 包管理器候选（按优先级）。本地没装对应包时，用包管理器临时拉取执行
+ * （dlx / exec），不报错。
+ * vp 是本机 wrapper（dlx 子命令）；npm 用 exec --yes（等价 npx --yes）；
+ * pnpm 用 dlx。bun 有 bunx，本机没有就跳过。
+ *
+ * extraPackages：需要随 bin 一起临时拉取并锁版本的包（如 vue-tsc 需配
+ * typescript@5，TS7 Go 版无 Compiler API，vue-tsc 会崩）。各包管理器锁版
+ * 语法不同，实测如下（2026-08，本机）：
+ *   vp   ：dlx -p vue-tsc -p typescript@5 -- vue-tsc <args>
+ *   npm  ：exec --yes --package vue-tsc --package typescript@5 -- vue-tsc <args>
+ *   pnpm ：dlx --package=vue-tsc --package=typescript@5 vue-tsc <args>
+ */
+const JS_PKG_MANAGERS: Array<{
+  cmd: string;
+  run: (bin: string, extraPackages: string[]) => string[];
+}> = [
+  {
+    cmd: "vp",
+    run: (bin, extra) => [
+      "dlx",
+      ...extra.flatMap((p) => ["-p", p]),
+      ...(extra.length ? ["--"] : []),
+      bin,
+    ],
+  },
+  {
+    cmd: "npm",
+    run: (bin, extra) => [
+      "exec",
+      "--yes",
+      ...extra.flatMap((p) => ["--package", p]),
+      "--",
+      bin,
+    ],
+  },
+  {
+    cmd: "pnpm",
+    run: (bin, extra) => [
+      "dlx",
+      ...extra.map((p) => `--package=${p}`),
+      bin,
+    ],
+  },
+];
+
+/** 用可用的 JS 包管理器临时执行某个 bin（找不到任何包管理器则 undefined）
+ * @param extraPackages 随 bin 一起临时拉取的包（可带版本锁定，如 "typescript@5"） */
+function resolveJsRunner(
+  bin: string,
+  args: string[],
+  extraPackages: string[] = [],
+): { cmd: string; args: string[] } | undefined {
+  for (const pm of JS_PKG_MANAGERS) {
+    if (hasCommand(pm.cmd)) {
+      return { cmd: pm.cmd, args: [...pm.run(bin, extraPackages), ...args] };
+    }
+  }
+  return undefined;
+}
+
 // ============ TS ============
 function resolveTsCmd(cwd: string): { cmd: string; args: string[] } | undefined {
-  // typescript 包的 bin 键名是 "tsc"（= tsc CLI）
-  const found = nodeRun(cwd, "typescript", ["--noEmit", "--pretty", "false"], "tsc");
+  const tscArgs = ["--noEmit", "--pretty", "false"];
+  // 1. 项目本地 typescript（bin 键名是 "tsc"）
+  const found = nodeRun(cwd, "typescript", tscArgs, "tsc");
   if (found) return found;
-  // 兜底：pnpm 符号链接结构下 package.json 的 bin 可能不是标准入口
+  // 2. 兜底：pnpm 符号链接结构下 package.json 的 bin 可能不是标准入口
   const tscJs = findUp(cwd, (d) =>
     existsSync(join(d, "node_modules", "typescript", "bin", "tsc")),
   );
   if (tscJs) {
     const entry = join(tscJs, "node_modules", "typescript", "bin", "tsc");
     if (existsSync(entry)) {
-      return {
-        cmd: process.execPath,
-        args: [entry, "--noEmit", "--pretty", "false"],
-      };
+      return { cmd: process.execPath, args: [entry, ...tscArgs] };
     }
   }
-  return undefined;
+  // 3. 本地没有 -> 用 JS 包管理器临时执行
+  return resolveJsRunner("tsc", tscArgs);
 }
 
 // ============ VUE ============
 function resolveVueCmd(cwd: string): { cmd: string; args: string[] } | undefined {
-  // vue-tsc 包的 bin 键名是 "vue-tsc"（= 包名，用默认）
-  return nodeRun(cwd, "vue-tsc", ["--noEmit", "--pretty", "false"]);
+  // 1. 项目本地 vue-tsc（bin 键名是 "vue-tsc"，= 包名，用默认）
+  const found = nodeRun(cwd, "vue-tsc", ["--noEmit", "--pretty", "false"]);
+  if (found) return found;
+  // 2. 本地没有 -> 用 JS 包管理器临时执行
+  //    注意：vue-tsc 必须配套 typescript 5.x（TS7 Go 版无 Compiler API，
+  //    且新版 JS 线 exports 不再暴露 ./lib/tsc，vue-tsc 启动即崩）。
+  //    实测需同时临时拉取 vue-tsc + typescript@5 并锁版。
+  return resolveJsRunner("vue-tsc", ["--noEmit", "--pretty", "false"], [
+    "vue-tsc",
+    "typescript@5",
+  ]);
 }
 
 // ============ PY（basedpyright 为主，ruff 可选）============
@@ -211,7 +298,7 @@ function resolveVueCmd(cwd: string): { cmd: string; args: string[] } | undefined
 function buildBasedpyrightArgs(
   cwd: string,
   config: LanguageConfig | undefined,
-): { cmd: string; args: string[] } {
+): string[] {
   const args: string[] = [];
 
   // 是否有项目配置文件（pyrightconfig.json 优先于 pyproject.toml）
@@ -255,7 +342,46 @@ function buildBasedpyrightArgs(
   }
 
   args.push("--outputjson");
-  return { cmd: "uvx", args: ["basedpyright", ...args] };
+  return args;
+}
+
+/**
+ * 定位 basedpyright 执行方式：优先真实命令，其次包管理器临时执行。
+ * 链：uvx（uv 临时执行）-> PATH 直接命令 -> pipx run -> uv run --with -> python -m。
+ * 一个都没有则返回 undefined（上层跳过不报错）。
+ */
+function resolveBasedpyrightCmd(
+  cwd: string,
+  config: LanguageConfig | undefined,
+): { cmd: string; args: string[] } | undefined {
+  const args = buildBasedpyrightArgs(cwd, config);
+  if (hasCommand("uvx")) {
+    return { cmd: "uvx", args: ["basedpyright", ...args] };
+  }
+  if (hasCommand("basedpyright")) {
+    return { cmd: "basedpyright", args };
+  }
+  if (hasCommand("pipx")) {
+    return { cmd: "pipx", args: ["run", "basedpyright", ...args] };
+  }
+  if (hasCommand("uv")) {
+    return {
+      cmd: "uv",
+      args: ["run", "--with", "basedpyright", "basedpyright", ...args],
+    };
+  }
+  const py = resolvePythonCmd();
+  if (py) {
+    return { cmd: py, args: ["-m", "basedpyright", ...args] };
+  }
+  return undefined;
+}
+
+/** 定位 python 可执行（python / py），用于 python -m 兜底 */
+function resolvePythonCmd(): string | undefined {
+  if (hasCommand("python")) return "python";
+  if (hasCommand("py")) return "py";
+  return undefined;
 }
 
 /** 解析 ${workspaceFolder} / ${workspaceRoot} 占位符为绝对路径。
@@ -296,16 +422,35 @@ function makeTempPyrightConfig(
 }
 
 function resolveRuffCmd(cwd: string): { cmd: string; args: string[] } | undefined {
-  // 项目本地 .venv 里的 ruff 优先，其次系统 PATH
+  const ruffArgs = ["check"];
+  // 1. 项目本地 .venv 里的 ruff 优先
   const venvBin = process.platform === "win32" ? "Scripts" : "bin";
   const venvRuff = process.platform === "win32" ? "ruff.exe" : "ruff";
   const local = findUp(cwd, (d) =>
     existsSync(join(d, ".venv", venvBin, venvRuff)),
   );
   if (local) {
-    return { cmd: join(local, ".venv", venvBin, venvRuff), args: ["check"] };
+    return { cmd: join(local, ".venv", venvBin, venvRuff), args: ruffArgs };
   }
-  return { cmd: "ruff", args: ["check"] };
+  // 2. PATH 直接命令
+  if (hasCommand("ruff")) {
+    return { cmd: "ruff", args: ruffArgs };
+  }
+  // 3. 包管理器临时执行：uvx -> pipx run -> uv run --with -> python -m
+  if (hasCommand("uvx")) {
+    return { cmd: "uvx", args: ["ruff", ...ruffArgs] };
+  }
+  if (hasCommand("pipx")) {
+    return { cmd: "pipx", args: ["run", "ruff", ...ruffArgs] };
+  }
+  if (hasCommand("uv")) {
+    return { cmd: "uv", args: ["run", "--with", "ruff", "ruff", ...ruffArgs] };
+  }
+  const py = resolvePythonCmd();
+  if (py) {
+    return { cmd: py, args: ["-m", "ruff", ...ruffArgs] };
+  }
+  return undefined;
 }
 
 // ============ 解析 ============
@@ -426,6 +571,7 @@ export default function (pi: ExtensionAPI): void {
       "改完代码后做最终验证时用此工具（全量、无头、可靠）；快速看当前编辑器错误用 vscode_get_diagnostics。",
       "不传 files 时全项目检查（慢，vue-tsc/tsc 大项目可能 30s~2min）；传 files 限定范围但底层仍是全项目编译（按文件过滤结果）。",
       "py 用 basedpyright（类型检查，与扩展同源）+ ruff（可选 lint，项目/系统有 ruff 时才跑）。",
+      "执行器找不到时自动交给包管理器临时执行（js: vp/npm/pnpm；py: uvx/pipx/python -m），全部不可用则跳过该项并在结果里以 ℹ 提示，不报错。",
     ],
     parameters: Type.Object({
       files: Type.Optional(
@@ -460,17 +606,14 @@ export default function (pi: ExtensionAPI): void {
 
       let cliItems: CliDiagnostic[] = [];
       let cliSource = "";
-      let cliError: string | undefined;
+      let cliNote: string | undefined;
       try {
         const result = runCliCheck(cwd, language, params.includeRuff, config);
-        if ("error" in result) {
-          cliError = result.error;
-        } else {
-          cliItems = filterByFiles(result.items, files, cwd);
-          cliSource = result.source;
-        }
+        cliItems = filterByFiles(result.items, files, cwd);
+        cliSource = result.source;
+        cliNote = result.note;
       } catch (e) {
-        cliError = e instanceof Error ? e.message : String(e);
+        cliNote = `检查器执行异常：${e instanceof Error ? e.message : String(e)}`;
       }
 
       const vscode = readVscodeDiagnostics();
@@ -481,7 +624,7 @@ export default function (pi: ExtensionAPI): void {
       const text = renderResult({
         language,
         cliSource,
-        cliError,
+        cliNote,
         cliCount,
         vscodeMatched,
         vscodeUnique,
@@ -495,7 +638,7 @@ export default function (pi: ExtensionAPI): void {
         details: {
           language,
           cliItems: cliItems.length,
-          cliError,
+          cliNote,
           vscodeTotal: vscode?.total ?? 0,
           vscodeMatched,
           vscodeUnique,
@@ -543,32 +686,43 @@ function runCliCheck(
   language: "ts" | "vue" | "py",
   includeRuff: boolean | undefined,
   config: LanguageConfig | undefined,
-): { items: CliDiagnostic[]; source: string } | { error: string } {
+): { items: CliDiagnostic[]; source: string; note?: string } {
   if (language === "py") {
     // 配置桥接：编辑器设置与配置文件 key 不同名，这里做映射。
     // 优先级（与语言服务器一致）：项目配置文件 > 编辑器设置（仅当项目
     // 无配置文件时，才把编辑器设置里显式改过的值合成临时配置喂给 CLI）。
-    const pyArgs = buildBasedpyrightArgs(cwd, config);
-    const r = run(pyArgs.cmd, pyArgs.args, cwd);
+    const based = resolveBasedpyrightCmd(cwd, config);
+    if (!based) {
+      return {
+        items: [],
+        source: "basedpyright",
+        note: "未找到 basedpyright 可执行方式（uvx/basedpyright/python -m 等），已跳过 py 类型检查",
+      };
+    }
+    const r = run(based.cmd, based.args, cwd);
     let all = parseBasedpyright(r.stdout);
     let source = "basedpyright";
+    const notes: string[] = [];
     if (includeRuff !== false) {
       const ruff = resolveRuffCmd(cwd);
       if (ruff) {
         const rr = run(ruff.cmd, ruff.args, cwd);
         all = [...all, ...parseRuff(rr.stdout)];
         source = "basedpyright + ruff";
+      } else {
+        notes.push("未找到 ruff 可执行方式（ruff/python -m ruff 等），已跳过 ruff lint");
       }
     }
-    return { items: all, source };
+    return { items: all, source, note: notes.join("；") || undefined };
   }
 
   if (language === "vue") {
     const bin = resolveVueCmd(cwd);
     if (!bin) {
       return {
-        error:
-          "未找到 vue-tsc，请在项目内安装（vp install vue-tsc typescript@5.x）。注意：vp dlx 会误拉 TypeScript 7（Go 版）导致崩溃，须本地装并锁定 typescript 5.x。",
+        items: [],
+        source: "vue-tsc",
+        note: "未找到 vue-tsc 可执行方式（本地 bin / vp / npm / pnpm），已跳过 vue 检查",
       };
     }
     const r = run(bin.cmd, bin.args, cwd);
@@ -582,7 +736,11 @@ function runCliCheck(
 
   const bin = resolveTsCmd(cwd);
   if (!bin) {
-    return { error: "未找到 typescript，请在项目内安装（vp install typescript@5.x）" };
+    return {
+      items: [],
+      source: "tsc",
+      note: "未找到 typescript 可执行方式（本地 bin / vp / npm / pnpm），已跳过 ts 检查",
+    };
   }
   const r = run(bin.cmd, bin.args, cwd);
   return {
@@ -669,7 +827,7 @@ function displayPath(file: string, cwd: string): string {
 function renderResult(args: {
   language: "ts" | "vue" | "py";
   cliSource: string;
-  cliError?: string;
+  cliNote?: string;
   cliCount: number;
   vscodeMatched: number;
   vscodeUnique: number;
@@ -689,9 +847,9 @@ function renderResult(args: {
     }）：`,
   );
 
-  if (args.cliError) {
+  if (args.cliNote) {
     lines.push("");
-    lines.push(`⚠ CLI 检查失败：${args.cliError}`);
+    lines.push(`ℹ ${args.cliNote}`);
   }
 
   if (args.merged.length === 0) {
