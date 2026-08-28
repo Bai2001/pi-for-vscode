@@ -7,7 +7,8 @@ pi for VSCode —— 在编辑器区分屏打开 pi 终端并注入编辑器上�
 - `src/extension.ts`：VSCode 扩展主入口（ esbuild 打包到 `dist/`）
 - `pi-extension/`：pi 侧扩展（运行时在终端 pi 进程内由 jiti 直接加载，**无需构建**）：
   - `run-diagnostics.ts`：`run_diagnostics` CLI 诊断工具（vue-tsc / tsc / basedpyright + ruff）
-  - `vscode-context.ts`、`vscode-diagnostics.ts`：编辑器上下文 / 诊断桥接
+  - `vscode-context.ts`：编辑器上下文 + 工作区结构注入系统提示词，并在输入框上边框右侧幽灵显示「工作区根名 · 当前活动文件」
+  - `vscode-diagnostics.ts`：诊断桥接
 - `pi-extension/tsconfig.json`：仅供编辑器类型检查；`paths` 内 SDK 路径带版本哈希，pi 大版本升级后需同步更新
 
 ## 发布新版本

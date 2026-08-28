@@ -1,11 +1,16 @@
 // pi-for-vscode 编辑器上下文注入扩展（运行在终端的 pi 进程内）
 // 读取 VSCode 扩展写入的 ~/.pi/agent/vscode-ide/<key>/{context.json,workspace.json}，
-// 在每次 agent 启动前把当前编辑器上下文 + 工作区结构追加到系统提示词
-// （before_agent_start 的 systemPrompt 追加，非替换、非塞进用户消息）。
-import { readFileSync } from "node:fs";
+// 1. 在每次 agent 启动前把当前编辑器上下文 + 工作区结构追加到系统提示词
+//    （before_agent_start 的 systemPrompt 追加，非替换、非塞进用户消息）；
+// 2. 在输入框上边框右侧幽灵显示工作区根名 + 当前活动文件（WorkspaceHintEditor）。
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  CustomEditor,
+  type ExtensionAPI,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 
 interface EditorContext {
   enabled: boolean;
@@ -133,5 +138,158 @@ export default function (pi: ExtensionAPI): void {
     if (!injection) return undefined;
     // 追加到现有系统提示词（保留 pi 原有的全部系统提示词）
     return { systemPrompt: `${event.systemPrompt}\n\n${injection}` };
+  });
+
+  registerWorkspaceHint(pi);
+}
+
+// ===== 输入框上边框右侧的幽灵显示：工作区根名 + 当前活动文件 =====
+// 纯展示（不参与输入），数据与系统提示词注入同源（vscode-ide/*.json），
+// 随 VSCode 侧写入自动更新。
+
+const HINT_MIN_WIDTH = 40; // 终端列宽窄于此值不显示
+const HINT_MAX_WIDTH = 48; // 标签最大可见宽度
+const HINT_REFRESH_MS = 1500; // 轮询 json 文件变化的间隔
+
+// 本地实现可见宽度 / 截断，避免运行时依赖 pi-tui 的工具函数
+// （边框行只有 SGR 序列，文件夹名可能含 CJK 宽字符）
+
+function charWidth(cp: number): number {
+  return cp >= 0x1100 &&
+    (cp <= 0x115f ||
+      cp === 0x2329 ||
+      cp === 0x232a ||
+      (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xfe30 && cp <= 0xfe4f) ||
+      (cp >= 0xff00 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x20000 && cp <= 0x3fffd))
+    ? 2
+    : 1;
+}
+
+function visualWidth(s: string): number {
+  const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
+  let w = 0;
+  for (const ch of plain) w += charWidth(ch.codePointAt(0)!);
+  return w;
+}
+
+/** 按可见宽度截断，保留 SGR 序列（TUI 每行末尾会自动补 reset） */
+function truncateVisual(s: string, maxWidth: number): string {
+  let out = "";
+  let w = 0;
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "\x1b") {
+      const m = /^\x1b\[[0-9;]*m/.exec(s.slice(i));
+      if (m) {
+        out += m[0];
+        i += m[0].length;
+        continue;
+      }
+    }
+    const cp = s.codePointAt(i)!;
+    const cw = charWidth(cp);
+    if (w + cw > maxWidth) break;
+    out += String.fromCodePoint(cp);
+    w += cw;
+    i += cp > 0xffff ? 2 : 1;
+  }
+  return out;
+}
+
+interface HintCache {
+  wsMtime: number;
+  ctxMtime: number;
+  label?: string;
+}
+
+let hintCache: HintCache = { wsMtime: -1, ctxMtime: -1 };
+
+function mtimeOf(file: string): number {
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return -1;
+  }
+}
+
+function computeHintLabel(): string | undefined {
+  const ws = readWorkspace();
+  if (!ws || ws.folders.length === 0) return undefined;
+  // Windows 路径大小写不敏感，统一小写比较（同 buildWorkspaceSection）
+  const cwdLower = process.cwd().toLowerCase();
+  const cwdFolder = ws.folders.find((f) => f.path.toLowerCase() === cwdLower) ?? ws.folders[0];
+  let label = cwdFolder.name;
+  if (ws.folders.length > 1) label += `+${ws.folders.length - 1}`;
+  const editorCtx = readContext();
+  if (editorCtx?.activeFile) label += ` · ${editorCtx.activeFile}`;
+  if (visualWidth(label) > HINT_MAX_WIDTH) {
+    label = `${truncateVisual(label, HINT_MAX_WIDTH - 1)}…`;
+  }
+  return label;
+}
+
+/** 按文件 mtime 缓存，避免每次渲染都读盘解析 */
+function getHintLabel(): string | undefined {
+  const wsMtime = mtimeOf(WORKSPACE_FILE);
+  const ctxMtime = mtimeOf(CONTEXT_FILE);
+  if (wsMtime !== hintCache.wsMtime || ctxMtime !== hintCache.ctxMtime) {
+    hintCache = { wsMtime, ctxMtime, label: computeHintLabel() };
+  }
+  return hintCache.label;
+}
+
+type EditorCtorArgs = ConstructorParameters<typeof CustomEditor>;
+
+/** 包装默认编辑器：仅在上边框行右侧叠加暗色标签，输入行为完全不变 */
+class WorkspaceHintEditor extends CustomEditor {
+  private readonly getTheme: () => Theme;
+
+  constructor(
+    tui: EditorCtorArgs[0],
+    theme: EditorCtorArgs[1],
+    keybindings: EditorCtorArgs[2],
+    getTheme: () => Theme,
+  ) {
+    super(tui, theme, keybindings);
+    this.getTheme = getTheme;
+  }
+
+  override render(width: number): string[] {
+    const lines = super.render(width);
+    if (lines.length === 0 || width < HINT_MIN_WIDTH) return lines;
+    const label = getHintLabel();
+    if (!label) return lines;
+    const text = ` ${label} `;
+    const labelWidth = visualWidth(text);
+    // 右侧至少留 2 列边框，放不下就不显示
+    if (labelWidth > width - 4) return lines;
+    lines[0] = truncateVisual(lines[0]!, width - labelWidth) + this.getTheme().fg("dim", text);
+    return lines;
+  }
+}
+
+function registerWorkspaceHint(pi: ExtensionAPI): void {
+  let hintTimerStarted = false;
+  pi.on("session_start", (_event, ctx) => {
+    let tuiRef: { requestRender(): void } | undefined;
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+      tuiRef = tui;
+      return new WorkspaceHintEditor(tui, theme, keybindings, () => ctx.ui.theme);
+    });
+    // pi 空闲时 VSCode 侧仍会更新 json，轮询 mtime 变化后主动触发重绘
+    // （Editor.render 每次重算，invalidate 是 no-op，无需额外失效）
+    if (!hintTimerStarted) {
+      hintTimerStarted = true;
+      const timer = setInterval(() => {
+        const before = hintCache.label;
+        if (getHintLabel() !== before) tuiRef?.requestRender();
+      }, HINT_REFRESH_MS);
+      timer.unref?.();
+    }
   });
 }
