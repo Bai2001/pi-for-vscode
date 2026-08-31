@@ -6,11 +6,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  CustomEditor,
-  type ExtensionAPI,
-  type Theme,
-} from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
 
 interface EditorContext {
   enabled: boolean;
@@ -110,13 +106,9 @@ function buildInjection(
     const fileDesc = ctx.activeFileRoot
       ? `\`${ctx.activeFile}\`（属于根 ${ctx.activeFileRootName ?? ctx.activeFileRoot}，完整路径: ${join(ctx.activeFileRoot, ctx.activeFile)}）`
       : `\`${ctx.activeFile}\`（工作区外文件）`;
-    lines.push(
-      `当前活动文件: ${fileDesc}${ctx.language ? ` [${ctx.language}]` : ""}`,
-    );
+    lines.push(`当前活动文件: ${fileDesc}${ctx.language ? ` [${ctx.language}]` : ""}`);
     if (ctx.selection !== undefined && ctx.selectionStartLine !== undefined) {
-      lines.push(
-        `用户选中了第 ${ctx.selectionStartLine}-${ctx.selectionEndLine} 行:`,
-      );
+      lines.push(`用户选中了第 ${ctx.selectionStartLine}-${ctx.selectionEndLine} 行:`);
       lines.push("```" + (ctx.language ?? ""));
       lines.push(ctx.selection);
       lines.push("```");
@@ -237,10 +229,7 @@ function computeHintLabel(): string | undefined {
   const editorCtx = readContext();
   if (editorCtx?.activeFile) {
     filePart = editorCtx.activeFile;
-    if (
-      editorCtx.selectionStartLine !== undefined &&
-      editorCtx.selectionEndLine !== undefined
-    ) {
+    if (editorCtx.selectionStartLine !== undefined && editorCtx.selectionEndLine !== undefined) {
       filePart +=
         editorCtx.selectionStartLine === editorCtx.selectionEndLine
           ? `:${editorCtx.selectionStartLine}`
@@ -332,18 +321,28 @@ interface HintState {
   requestRender: () => void;
 }
 
-let hintState: HintState | undefined;
-let hintTimerStarted = false;
-
 function registerWorkspaceHint(pi: ExtensionAPI): void {
+  let hintState: HintState | undefined;
+  let hintTimer: ReturnType<typeof setInterval> | undefined;
+
+  const stopHintTimer = () => {
+    if (hintTimer !== undefined) {
+      clearInterval(hintTimer);
+      hintTimer = undefined;
+    }
+    hintState = undefined;
+  };
+
   pi.on("session_start", (_event, ctx) => {
     if (!ctx.hasUI) return;
     let tuiRef: { requestRender(): void } | undefined;
     // 当前被包装的工厂（pi-open-tui 的圆角编辑器工厂，或 undefined 用默认编辑器兜底）
     let innerFactory: ReturnType<typeof ctx.ui.getEditorComponent>;
-    const wrapperFactory: NonNullable<
-      Parameters<typeof ctx.ui.setEditorComponent>[0]
-    > = (tui, theme, keybindings) => {
+    const wrapperFactory: NonNullable<Parameters<typeof ctx.ui.setEditorComponent>[0]> = (
+      tui,
+      theme,
+      keybindings,
+    ) => {
       tuiRef = tui;
       const editor = innerFactory
         ? innerFactory(tui, theme, keybindings)
@@ -364,14 +363,23 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
       requestRender: () => tuiRef?.requestRender(),
     };
     // 1. 编辑器工厂被其他扩展替换后重新包装；2. VSCode 侧更新 json 后主动重绘
-    if (!hintTimerStarted) {
-      hintTimerStarted = true;
-      const timer = setInterval(() => {
-        hintState?.ensure();
-        const before = hintCache.label;
-        if (getHintLabel() !== before) hintState?.requestRender();
+    if (hintTimer === undefined) {
+      hintTimer = setInterval(() => {
+        try {
+          hintState?.ensure();
+          const before = hintCache.label;
+          if (getHintLabel() !== before) hintState?.requestRender();
+        } catch {
+          // /reload、/new 等会让旧 ctx 失效；漏清理时也不能让 uncaughtException 打崩进程
+          stopHintTimer();
+        }
       }, HINT_REFRESH_MS);
-      timer.unref?.();
+      hintTimer.unref?.();
     }
+  });
+
+  // 定时器闭包了 session_start 的 ctx；/reload、/new、/resume、/fork 会 invalidate 旧 ctx
+  pi.on("session_shutdown", () => {
+    stopHintTimer();
   });
 }
