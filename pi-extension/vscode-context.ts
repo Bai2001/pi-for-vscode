@@ -361,7 +361,7 @@ function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Them
 interface HintState {
   /** 检查当前生效的编辑器工厂是否仍是我们的包装，被其他扩展替换则重新包装。返回是否刚重新包装。 */
   ensure: () => boolean;
-  requestRender: () => void;
+  requestRender: (force?: boolean) => void;
 }
 
 function registerWorkspaceHint(pi: ExtensionAPI): void {
@@ -381,7 +381,7 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     if (!ctx.hasUI) return;
-    let tuiRef: { requestRender(): void } | undefined;
+    let tuiRef: { requestRender(force?: boolean): void } | undefined;
     // 当前被包装的工厂（pi-open-tui 的圆角编辑器工厂，或 undefined 用默认编辑器兜底）
     let innerFactory: ReturnType<typeof ctx.ui.getEditorComponent>;
     const wrapperFactory: NonNullable<Parameters<typeof ctx.ui.setEditorComponent>[0]> = (
@@ -419,23 +419,26 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
     ensureWrapped();
     hintState = {
       ensure: ensureWrapped,
-      requestRender: () => tuiRef?.requestRender(),
+      requestRender: (force?: boolean) => tuiRef?.requestRender(force),
     };
-    // 分屏落位 / pi-open-tui 晚于我们注册工厂时，首帧可能是错列宽或未包装的编辑器。
-    // 延迟再画几次，避免必须手动拖动终端大小才恢复。
-    for (const ms of [0, 200, 500]) {
-      const t = setTimeout(() => hintState?.requestRender(), ms);
+    // pi-open-tui 会在 session_start 里清屏（\x1b[2J），TUI 不知情仍做差分刷新，
+    // 欢迎页/边框留在 previousLines 里以为没变，屏幕就空了。拖动分割条会走
+    // requestRender(true) → resetRenderState → 全量重绘才恢复。
+    // 普通 requestRender() 不够；启动后强制全量重绘几次。
+    for (const ms of [50, 250, 800]) {
+      const t = setTimeout(() => hintState?.requestRender(true), ms);
       t.unref?.();
       delayTimers.push(t);
     }
-    // 1. 编辑器工厂被其他扩展替换后重新包装并重绘；2. VSCode 侧更新 json 后主动重绘
+    // 1. 编辑器工厂被其他扩展替换后重新包装并全量重绘；2. VSCode 侧更新 json 后差分刷新标签
     if (hintTimer === undefined) {
       hintTimer = setInterval(() => {
         try {
           const rewrapped = hintState?.ensure() ?? false;
           const before = hintCache.parts;
           getHintParts();
-          if (rewrapped || hintCache.parts !== before) hintState?.requestRender();
+          if (rewrapped) hintState?.requestRender(true);
+          else if (hintCache.parts !== before) hintState?.requestRender();
         } catch {
           // /reload、/new 等会让旧 ctx 失效；漏清理时也不能让 uncaughtException 打崩进程
           stopHintTimer();
