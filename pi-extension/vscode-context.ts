@@ -288,7 +288,7 @@ function lastVisibleChar(s: string): string {
  * 不替换编辑器实例，避免破坏 pi-open-tui 等扩展的自定义编辑器；
  * 输入行为完全不变，标签纯展示。
  */
-function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Theme): T {
+function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Theme | undefined): T {
   if (patchedEditors.has(editor)) return editor;
   patchedEditors.add(editor);
   const origRender = editor.render.bind(editor);
@@ -296,7 +296,8 @@ function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Them
     const lines = origRender(width);
     if (lines.length === 0 || width < HINT_MIN_WIDTH) return lines;
     const label = getHintLabel();
-    if (!label) return lines;
+    const theme = getTheme();
+    if (!label || !theme) return lines;
     const text = ` ${label} `;
     const labelWidth = visualWidth(text);
     // 标签 + 右侧框角之外，至少保留 4 列边框
@@ -307,7 +308,7 @@ function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Them
     const borderPrefix = SGR_PREFIX_RE.exec(line)?.[0] ?? "";
     lines[0] =
       truncateVisual(line, width - labelWidth - 1) +
-      getTheme().fg("dim", text) +
+      theme.fg("dim", text) +
       borderPrefix +
       lastVisibleChar(line);
     return lines;
@@ -347,15 +348,26 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
       const editor = innerFactory
         ? innerFactory(tui, theme, keybindings)
         : new CustomEditor(tui, theme, keybindings);
-      return patchEditorRender(editor, () => ctx.ui.theme);
+      return patchEditorRender(editor, () => {
+        try {
+          return ctx.ui.theme;
+        } catch {
+          // 会话已替换时 TUI 仍可能重绘；跳过标签，避免 render 打崩进程
+          return undefined;
+        }
+      });
     };
     // 扩展是异步逐个加载的，pi-open-tui 可能在我们之后才注册它的工厂，
     // 一次性延迟注册不可靠；由定时器持续检查，被替换后重新包装
     const ensureWrapped = () => {
-      const current = ctx.ui.getEditorComponent();
-      if (current === wrapperFactory) return;
-      innerFactory = current;
-      ctx.ui.setEditorComponent(wrapperFactory);
+      try {
+        const current = ctx.ui.getEditorComponent();
+        if (current === wrapperFactory) return;
+        innerFactory = current;
+        ctx.ui.setEditorComponent(wrapperFactory);
+      } catch {
+        stopHintTimer();
+      }
     };
     ensureWrapped();
     hintState = {
