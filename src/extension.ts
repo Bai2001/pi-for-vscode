@@ -10,9 +10,7 @@ import { registerUpdateChecker } from "./update.js";
 /** 当前工作区的隔离 key（与 pi 扩展端用同一编码：cwd 非字母数字转 -，并转小写） */
 function workspaceKey(): string {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  return folder
-    ? folder.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase()
-    : "no-workspace";
+  return folder ? folder.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase() : "no-workspace";
 }
 
 /** 本工作区专属目录（多 VSCode 窗口互不干扰） */
@@ -96,8 +94,7 @@ function writeDiagnostics(): void {
         file: rel,
         line: d.range.start.line + 1,
         col: d.range.start.character + 1,
-        severity:
-          d.severity === vscode.DiagnosticSeverity.Error ? "error" : "warning",
+        severity: d.severity === vscode.DiagnosticSeverity.Error ? "error" : "warning",
         message: d.message.split("\n")[0].slice(0, 300),
         source: d.source,
       });
@@ -106,9 +103,7 @@ function writeDiagnostics(): void {
   }
 
   // 每根内排序：error 优先，再按文件与行号
-  const roots = [...byRoot.values()].sort((a, b) =>
-    a.rootName.localeCompare(b.rootName),
-  );
+  const roots = [...byRoot.values()].sort((a, b) => a.rootName.localeCompare(b.rootName));
   for (const r of roots) {
     r.diagnostics.sort((a, b) =>
       a.severity === b.severity
@@ -143,9 +138,7 @@ interface WorkspaceFolderInfo {
 /** 写入工作区结构（根目录列表）。启动 + 根目录变化时调用。 */
 let lastWorkspaceWritten = "";
 function writeWorkspaceInfo(): void {
-  const folders: WorkspaceFolderInfo[] = (
-    vscode.workspace.workspaceFolders ?? []
-  ).map((f) => ({
+  const folders: WorkspaceFolderInfo[] = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
     name: f.name,
     path: f.uri.fsPath,
   }));
@@ -202,12 +195,8 @@ function collectLanguageConfig(): LanguageConfigSnapshot {
   const tsdk = tsConfig.get<string>("tsdk") ?? null;
 
   // basedpyright：typeCheckingMode 是它自己的字段；解释器走 python 扩展
-  const pyScope =
-    resource !== undefined ? { uri: resource, languageId: "python" } : undefined;
-  const bpConfig = vscode.workspace.getConfiguration(
-    "basedpyright.analysis",
-    pyScope,
-  );
+  const pyScope = resource !== undefined ? { uri: resource, languageId: "python" } : undefined;
+  const bpConfig = vscode.workspace.getConfiguration("basedpyright.analysis", pyScope);
   const pythonConfig = vscode.workspace.getConfiguration("python", pyScope);
 
   return {
@@ -218,8 +207,7 @@ function collectLanguageConfig(): LanguageConfigSnapshot {
     },
     basedpyright: {
       typeCheckingMode: bpConfig.get<string>("typeCheckingMode") ?? null,
-      interpreterPath:
-        pythonConfig.get<string>("defaultInterpreterPath") ?? null,
+      interpreterPath: pythonConfig.get<string>("defaultInterpreterPath") ?? null,
       venvPath: pythonConfig.get<string>("venvPath") ?? null,
     },
   };
@@ -349,8 +337,7 @@ let extensionPath = "";
 /** 在 PATH 中探测 pi 可执行文件（Windows 优先 pi.exe/pi.cmd） */
 function findPiExecutable(): string | undefined {
   const pathEnv = process.env.PATH ?? "";
-  const names =
-    process.platform === "win32" ? ["pi.exe", "pi.cmd", "pi.bat"] : ["pi"];
+  const names = process.platform === "win32" ? ["pi.exe", "pi.cmd", "pi.bat"] : ["pi"];
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue;
     for (const name of names) {
@@ -376,36 +363,34 @@ async function openPiTerminal(): Promise<void> {
   piTerminalCount += 1;
   const name = piTerminalCount === 1 ? "pi" : `pi #${piTerminalCount}`;
 
+  // 直接在目标分屏创建。若先按 Editor 打开再 moveEditorToRightGroup，
+  // pi 会在旧列宽下完成首帧；分屏后 VSCode 不一定发 resize，TUI 按过宽的
+  // 上边框换行，整页看起来残缺，直到手动拖动分割条才恢复。
+  const location = splitRight
+    ? { viewColumn: vscode.ViewColumn.Beside }
+    : vscode.TerminalLocation.Editor;
+
   const terminal = piPath
     ? // pi 进程直接作为终端 shell：pi 一退出，终端随之关闭
       vscode.window.createTerminal({
         name,
-        location: vscode.TerminalLocation.Editor,
+        location,
         shellPath: piPath,
         cwd,
         iconPath: {
           light: vscode.Uri.file(path.join(extensionPath, "media", "pi.svg")),
-          dark: vscode.Uri.file(
-            path.join(extensionPath, "media", "pi-dark.svg"),
-          ),
+          dark: vscode.Uri.file(path.join(extensionPath, "media", "pi-dark.svg")),
         },
       })
     : // 找不到 pi 可执行文件时回退：普通终端里跑 pi（pi 退出后回到 shell）
       vscode.window.createTerminal({
         name,
-        location: vscode.TerminalLocation.Editor,
+        location,
         cwd,
       });
   terminal.show();
   if (!piPath) {
     terminal.sendText("pi", true);
-  }
-
-  if (splitRight) {
-    // 把编辑器区的终端移到右侧分屏
-    await vscode.commands
-      .executeCommand("workbench.action.moveEditorToRightGroup")
-      .then(undefined, () => undefined);
   }
 }
 
@@ -414,10 +399,7 @@ export function activate(context: vscode.ExtensionContext): void {
   readConfig();
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(
-      "pi-for-vscode.openTerminal",
-      () => void openPiTerminal(),
-    ),
+    vscode.commands.registerCommand("pi-for-vscode.openTerminal", () => void openPiTerminal()),
     // 编辑器/选区变化时刷新上下文
     vscode.window.onDidChangeActiveTextEditor(() => writeContext()),
     vscode.window.onDidChangeTextEditorSelection(() => writeContext()),

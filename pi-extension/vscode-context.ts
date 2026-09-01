@@ -140,7 +140,8 @@ export default function (pi: ExtensionAPI): void {
 // 随 VSCode 侧写入自动更新。
 
 const HINT_MIN_WIDTH = 40; // 终端列宽窄于此值不显示
-const HINT_MAX_WIDTH = 48; // 标签最大可见宽度
+const HINT_MAX_WIDTH = 40; // 标签最大可见宽度（还会按编辑器实际列宽再收）
+const HINT_MIN_BORDER = 16; // 上边框至少保留的 ─ 列数，避免盒子看起来残缺
 const HINT_REFRESH_MS = 1500; // 轮询 json 文件变化的间隔
 
 // 本地实现可见宽度 / 截断，避免运行时依赖 pi-tui 的工具函数
@@ -199,10 +200,15 @@ function truncateVisual(s: string, maxWidth: number): string {
   return out;
 }
 
+interface HintParts {
+  root: string;
+  file: string;
+}
+
 interface HintCache {
   wsMtime: number;
   ctxMtime: number;
-  label?: string;
+  parts?: HintParts;
 }
 
 let hintCache: HintCache = { wsMtime: -1, ctxMtime: -1 };
@@ -215,41 +221,33 @@ function mtimeOf(file: string): number {
   }
 }
 
-function computeHintLabel(): string | undefined {
+function computeHintParts(): HintParts | undefined {
   const ws = readWorkspace();
   if (!ws || ws.folders.length === 0) return undefined;
   // Windows 路径大小写不敏感，统一小写比较（同 buildWorkspaceSection）
   const cwdLower = process.cwd().toLowerCase();
   const cwdFolder = ws.folders.find((f) => f.path.toLowerCase() === cwdLower) ?? ws.folders[0];
-  const rootPart =
-    ws.folders.length > 1 ? `${cwdFolder.name}+${ws.folders.length - 1}` : cwdFolder.name;
 
-  // 文件部分：路径 + 行号/选区（有选区 :起-止，单行折叠，无选区 :光标行）
-  let filePart = "";
+  let root = cwdFolder.name;
+  let file = "";
   const editorCtx = readContext();
   if (editorCtx?.activeFile) {
-    filePart = editorCtx.activeFile;
+    // 多根工作区显示文件所属根，而不是 cwd+N（后者既占宽度又看不出文件在哪）
+    root = editorCtx.activeFileRootName ?? cwdFolder.name;
+    file = editorCtx.activeFile;
     if (editorCtx.selectionStartLine !== undefined && editorCtx.selectionEndLine !== undefined) {
-      filePart +=
+      file +=
         editorCtx.selectionStartLine === editorCtx.selectionEndLine
           ? `:${editorCtx.selectionStartLine}`
           : `:${editorCtx.selectionStartLine}-${editorCtx.selectionEndLine}`;
     } else if (editorCtx.cursorLine !== undefined) {
-      filePart += `:${editorCtx.cursorLine}`;
+      file += `:${editorCtx.cursorLine}`;
     }
   }
-
-  const label = filePart ? `${rootPart} · ${filePart}` : rootPart;
-  if (visualWidth(label) <= HINT_MAX_WIDTH) return label;
-  // 超长：优先保留根名和行号后缀，从左侧截断文件路径
-  if (filePart) {
-    const budget = HINT_MAX_WIDTH - visualWidth(rootPart) - 3 /* " · " */ - 1; /* "…" */
-    if (budget >= 8) return `${rootPart} · …${truncateLeftPlain(filePart, budget)}`;
-  }
-  return `${truncateVisual(label, HINT_MAX_WIDTH - 1)}…`;
+  return { root, file };
 }
 
-/** 纯文本从左侧截断到指定可见宽度（保留尾部，用于文件路径） */
+/** 纯文本从左侧截断到指定可见宽度（保留尾部） */
 function truncateLeftPlain(s: string, maxWidth: number): string {
   let out = "";
   let w = 0;
@@ -263,14 +261,53 @@ function truncateLeftPlain(s: string, maxWidth: number): string {
   return out;
 }
 
-/** 按文件 mtime 缓存，避免每次渲染都读盘解析 */
-function getHintLabel(): string | undefined {
+/** 路径过长时丢掉左侧目录分量，尽量完整保留文件名和行号 */
+function truncatePathTail(s: string, maxWidth: number): string {
+  if (visualWidth(s) <= maxWidth) return s;
+  const sep = s.includes("\\") ? "\\" : "/";
+  const parts = s.split(/[/\\]/);
+  const used: string[] = [];
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const trial = [parts[i], ...used].join(sep);
+    const label = i > 0 ? `...${sep}${trial}` : trial;
+    if (visualWidth(label) > maxWidth) break;
+    used.unshift(parts[i]!);
+  }
+  if (used.length === 0) {
+    const base = parts[parts.length - 1] ?? s;
+    if (visualWidth(base) <= maxWidth) return base;
+    return truncateLeftPlain(base, maxWidth);
+  }
+  const joined = used.join(sep);
+  if (used.length < parts.length) {
+    const dotted = `...${sep}${joined}`;
+    if (visualWidth(dotted) <= maxWidth) return dotted;
+  }
+  return joined;
+}
+
+function formatHintLabel(parts: HintParts, maxWidth: number): string {
+  if (!parts.file) {
+    return visualWidth(parts.root) <= maxWidth
+      ? parts.root
+      : `${truncateVisual(parts.root, Math.max(1, maxWidth - 3))}...`;
+  }
+  const sep = " / ";
+  const full = `${parts.root}${sep}${parts.file}`;
+  if (visualWidth(full) <= maxWidth) return full;
+  const fileBudget = maxWidth - visualWidth(parts.root) - visualWidth(sep);
+  if (fileBudget >= 8) return `${parts.root}${sep}${truncatePathTail(parts.file, fileBudget)}`;
+  return `${truncateVisual(full, Math.max(1, maxWidth - 3))}...`;
+}
+
+/** 按文件 mtime 缓存原始片段，截断在 render 时按实际列宽做 */
+function getHintParts(): HintParts | undefined {
   const wsMtime = mtimeOf(WORKSPACE_FILE);
   const ctxMtime = mtimeOf(CONTEXT_FILE);
   if (wsMtime !== hintCache.wsMtime || ctxMtime !== hintCache.ctxMtime) {
-    hintCache = { wsMtime, ctxMtime, label: computeHintLabel() };
+    hintCache = { wsMtime, ctxMtime, parts: computeHintParts() };
   }
-  return hintCache.label;
+  return hintCache.parts;
 }
 
 type EditorLike = { render(width: number): string[] };
@@ -295,42 +332,50 @@ function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Them
   editor.render = (width: number): string[] => {
     const lines = origRender(width);
     if (lines.length === 0 || width < HINT_MIN_WIDTH) return lines;
-    const label = getHintLabel();
+    const parts = getHintParts();
     const theme = getTheme();
-    if (!label || !theme) return lines;
+    if (!parts || !theme) return lines;
+    const maxLabel = Math.min(HINT_MAX_WIDTH, Math.max(8, width - HINT_MIN_BORDER));
+    const label = formatHintLabel(parts, maxLabel);
     const text = ` ${label} `;
     const labelWidth = visualWidth(text);
-    // 标签 + 右侧框角之外，至少保留 4 列边框
-    if (labelWidth > width - 6) return lines;
+    // 标签 + 右侧框角之外，至少保留 HINT_MIN_BORDER 列边框
+    if (labelWidth > width - HINT_MIN_BORDER) return lines;
     const line = lines[0]!;
     // 截掉右侧一段边框，插入标签，再补上带原边框色的行尾字符（╮/─），
     // 使框角颜色与主题一致
     const borderPrefix = SGR_PREFIX_RE.exec(line)?.[0] ?? "";
-    lines[0] =
+    const patched =
       truncateVisual(line, width - labelWidth - 1) +
       theme.fg("dim", text) +
       borderPrefix +
       lastVisibleChar(line);
+    // 宁可丢掉标签，也不让这一行超出 width：pi-tui 会因换行错位把整页画残
+    if (visualWidth(patched) > width) return lines;
+    lines[0] = patched;
     return lines;
   };
   return editor;
 }
 
 interface HintState {
-  /** 检查当前生效的编辑器工厂是否仍是我们的包装，被其他扩展替换则重新包装 */
-  ensure: () => void;
+  /** 检查当前生效的编辑器工厂是否仍是我们的包装，被其他扩展替换则重新包装。返回是否刚重新包装。 */
+  ensure: () => boolean;
   requestRender: () => void;
 }
 
 function registerWorkspaceHint(pi: ExtensionAPI): void {
   let hintState: HintState | undefined;
   let hintTimer: ReturnType<typeof setInterval> | undefined;
+  const delayTimers: ReturnType<typeof setTimeout>[] = [];
 
   const stopHintTimer = () => {
     if (hintTimer !== undefined) {
       clearInterval(hintTimer);
       hintTimer = undefined;
     }
+    for (const t of delayTimers) clearTimeout(t);
+    delayTimers.length = 0;
     hintState = undefined;
   };
 
@@ -359,14 +404,16 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
     };
     // 扩展是异步逐个加载的，pi-open-tui 可能在我们之后才注册它的工厂，
     // 一次性延迟注册不可靠；由定时器持续检查，被替换后重新包装
-    const ensureWrapped = () => {
+    const ensureWrapped = (): boolean => {
       try {
         const current = ctx.ui.getEditorComponent();
-        if (current === wrapperFactory) return;
+        if (current === wrapperFactory) return false;
         innerFactory = current;
         ctx.ui.setEditorComponent(wrapperFactory);
+        return true;
       } catch {
         stopHintTimer();
+        return false;
       }
     };
     ensureWrapped();
@@ -374,13 +421,21 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
       ensure: ensureWrapped,
       requestRender: () => tuiRef?.requestRender(),
     };
-    // 1. 编辑器工厂被其他扩展替换后重新包装；2. VSCode 侧更新 json 后主动重绘
+    // 分屏落位 / pi-open-tui 晚于我们注册工厂时，首帧可能是错列宽或未包装的编辑器。
+    // 延迟再画几次，避免必须手动拖动终端大小才恢复。
+    for (const ms of [0, 200, 500]) {
+      const t = setTimeout(() => hintState?.requestRender(), ms);
+      t.unref?.();
+      delayTimers.push(t);
+    }
+    // 1. 编辑器工厂被其他扩展替换后重新包装并重绘；2. VSCode 侧更新 json 后主动重绘
     if (hintTimer === undefined) {
       hintTimer = setInterval(() => {
         try {
-          hintState?.ensure();
-          const before = hintCache.label;
-          if (getHintLabel() !== before) hintState?.requestRender();
+          const rewrapped = hintState?.ensure() ?? false;
+          const before = hintCache.parts;
+          getHintParts();
+          if (rewrapped || hintCache.parts !== before) hintState?.requestRender();
         } catch {
           // /reload、/new 等会让旧 ctx 失效；漏清理时也不能让 uncaughtException 打崩进程
           stopHintTimer();
