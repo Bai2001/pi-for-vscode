@@ -4,6 +4,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import {
+  maybePromptAutoApprove,
+  startBrowserIpc,
+  type BrowserIpcHandle,
+} from "./browser-ipc.js";
 import { syncPiExtensions } from "./sync-pi-extension.js";
 import { registerUpdateChecker } from "./update.js";
 
@@ -333,6 +338,7 @@ function readConfig(): void {
 }
 
 let extensionPath = "";
+let browserIpc: BrowserIpcHandle | undefined;
 
 /** 在 PATH 中探测 pi 可执行文件（Windows 优先 pi.exe/pi.cmd） */
 function findPiExecutable(): string | undefined {
@@ -370,6 +376,7 @@ async function openPiTerminal(): Promise<void> {
     ? { viewColumn: vscode.ViewColumn.Beside }
     : vscode.TerminalLocation.Editor;
 
+  const env = browserIpc?.env;
   const terminal = piPath
     ? // pi 进程直接作为终端 shell：pi 一退出，终端随之关闭
       vscode.window.createTerminal({
@@ -377,6 +384,7 @@ async function openPiTerminal(): Promise<void> {
         location,
         shellPath: piPath,
         cwd,
+        env,
         iconPath: {
           light: vscode.Uri.file(path.join(extensionPath, "media", "pi.svg")),
           dark: vscode.Uri.file(path.join(extensionPath, "media", "pi-dark.svg")),
@@ -387,6 +395,7 @@ async function openPiTerminal(): Promise<void> {
         name,
         location,
         cwd,
+        env,
       });
   terminal.show();
   if (!piPath) {
@@ -397,6 +406,10 @@ async function openPiTerminal(): Promise<void> {
 export function activate(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
   readConfig();
+
+  browserIpc = startBrowserIpc();
+  context.subscriptions.push({ dispose: () => browserIpc?.dispose() });
+  void maybePromptAutoApprove(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("pi-for-vscode.openTerminal", () => void openPiTerminal()),
