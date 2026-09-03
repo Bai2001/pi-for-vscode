@@ -1,146 +1,10 @@
 // pi-for-vscode 内置浏览器工具（运行在终端的 pi 进程内）
-// 通过 VSCode 扩展注入的 named pipe 调用宿主的 vscode.lm.invokeTool。
-import { randomUUID } from "node:crypto";
-import net from "node:net";
+// 通过 named pipe 调用宿主的 vscode.lm.invokeTool。
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { callIpc, type IpcResponse } from "./vscode-ipc";
 
-const ENV_IPC = "PI_VSCODE_BROWSER_IPC";
-const ENV_TOKEN = "PI_VSCODE_BROWSER_TOKEN";
-const MAX_LINE_BYTES = 20 * 1024 * 1024;
-
-interface BrowserIpcImage {
-  mimeType: string;
-  data: string;
-}
-
-interface BrowserIpcResponse {
-  id: string;
-  ok: boolean;
-  text?: string;
-  image?: BrowserIpcImage;
-  error?: string;
-}
-
-function requireIpc(): { path: string; token: string } {
-  const path = process.env[ENV_IPC];
-  const token = process.env[ENV_TOKEN];
-  if (!path || !token) {
-    throw new Error(
-      "不在 VSCode pi 终端中，浏览器工具不可用。请用扩展命令「pi：打开终端会话」启动 pi。",
-    );
-  }
-  return { path, token };
-}
-
-function extractLines(buffer: Buffer): { lines: string[]; rest: Buffer } {
-  const lines: string[] = [];
-  let start = 0;
-  for (let i = 0; i < buffer.length; i++) {
-    if (buffer[i] !== 0x0a) continue;
-    const slice = buffer.subarray(start, i);
-    if (slice.length > MAX_LINE_BYTES) {
-      throw new Error(`报文超过 ${MAX_LINE_BYTES} 字节`);
-    }
-    lines.push(slice.toString("utf8"));
-    start = i + 1;
-  }
-  const rest = buffer.subarray(start);
-  if (rest.length > MAX_LINE_BYTES) {
-    throw new Error(`报文超过 ${MAX_LINE_BYTES} 字节`);
-  }
-  return { lines, rest };
-}
-
-function parseResponse(line: string): BrowserIpcResponse {
-  const raw = JSON.parse(line) as unknown;
-  if (!raw || typeof raw !== "object") throw new Error("响应不是对象");
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.id !== "string" || typeof obj.ok !== "boolean") {
-    throw new Error("响应缺少 id/ok");
-  }
-  const res: BrowserIpcResponse = { id: obj.id, ok: obj.ok };
-  if (typeof obj.text === "string") res.text = obj.text;
-  if (typeof obj.error === "string") res.error = obj.error;
-  if (obj.image && typeof obj.image === "object") {
-    const img = obj.image as Record<string, unknown>;
-    if (typeof img.mimeType === "string" && typeof img.data === "string") {
-      res.image = { mimeType: img.mimeType, data: img.data };
-    }
-  }
-  return res;
-}
-
-function callBrowser(
-  tool: string,
-  args: Record<string, unknown>,
-  timeoutMs: number,
-  signal?: AbortSignal,
-): Promise<BrowserIpcResponse> {
-  const { path, token } = requireIpc();
-  const id = randomUUID();
-  const payload = `${JSON.stringify({ id, token, tool, args })}\n`;
-
-  return new Promise((resolve, reject) => {
-    const socket = net.connect({ path });
-    let buf: Buffer = Buffer.alloc(0);
-    let settled = false;
-
-    const finish = (err?: Error, res?: BrowserIpcResponse) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      socket.destroy();
-      if (err) reject(err);
-      else resolve(res!);
-    };
-
-    const onAbort = () => finish(new Error("已取消"));
-    const timer = setTimeout(
-      () => finish(new Error(`浏览器工具超时（${timeoutMs}ms）：${tool}`)),
-      timeoutMs,
-    );
-    signal?.addEventListener("abort", onAbort, { once: true });
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-
-    socket.on("connect", () => {
-      socket.write(payload);
-    });
-    socket.on("data", (chunk) => {
-      try {
-        buf = Buffer.concat([buf, chunk]);
-        const extracted = extractLines(buf);
-        buf = extracted.rest;
-        const line = extracted.lines.find((l) => l.trim());
-        if (!line) return;
-        const res = parseResponse(line);
-        if (!res.ok) {
-          finish(new Error(res.error || "浏览器工具调用失败"));
-          return;
-        }
-        finish(undefined, res);
-      } catch (err) {
-        finish(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-    socket.on("error", (err) => {
-      finish(
-        new Error(
-          `无法连接 VSCode 浏览器桥（${err.message}）。请确认 pi-for-vscode 扩展已激活，并用「pi：打开终端会话」打开终端。`,
-        ),
-      );
-    });
-    socket.on("end", () => {
-      if (!settled) finish(new Error("浏览器桥连接被关闭，未收到响应"));
-    });
-  });
-}
-
-function textAndImage(res: BrowserIpcResponse): Array<
+function textAndImage(res: IpcResponse): Array<
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string }
 > {
@@ -179,7 +43,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, signal) {
-      const res = await callBrowser(
+      const res = await callIpc(
         "vscode_browser_open_page",
         { url: params.url },
         120_000,
@@ -204,7 +68,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, signal) {
-      const res = await callBrowser(
+      const res = await callIpc(
         "vscode_browser_read_page",
         { pageId: params.pageId },
         30_000,
@@ -240,12 +104,7 @@ export default function (pi: ExtensionAPI): void {
       const args: Record<string, unknown> = { pageId: params.pageId };
       if (params.selector) args.selector = params.selector;
       if (params.ref) args.ref = params.ref;
-      const res = await callBrowser(
-        "vscode_browser_screenshot",
-        args,
-        30_000,
-        signal,
-      );
+      const res = await callIpc("vscode_browser_screenshot", args, 30_000, signal);
       return { content: textAndImage(res), details: undefined };
     },
   });
@@ -269,7 +128,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, signal) {
-      const res = await callBrowser(
+      const res = await callIpc(
         "vscode_browser_playwright",
         { pageId: params.pageId, code: params.code },
         120_000,

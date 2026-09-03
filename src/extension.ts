@@ -9,6 +9,7 @@ import {
   startBrowserIpc,
   type BrowserIpcHandle,
 } from "./browser-ipc.js";
+import { publishIdeSnapshot } from "./ide-store.js";
 import { syncPiExtensions } from "./sync-pi-extension.js";
 import { registerUpdateChecker } from "./update.js";
 
@@ -119,12 +120,14 @@ function writeDiagnostics(): void {
     );
   }
 
-  const payload = JSON.stringify({
+  const obj = {
     updatedAt: Date.now(),
     total,
     truncated: total > kept,
     roots,
-  });
+  };
+  publishIdeSnapshot("diagnostics", obj);
+  const payload = JSON.stringify(obj);
   if (payload === lastDiagnosticsWritten) return;
   lastDiagnosticsWritten = payload;
   void fs.promises
@@ -147,7 +150,9 @@ function writeWorkspaceInfo(): void {
     name: f.name,
     path: f.uri.fsPath,
   }));
-  const payload = JSON.stringify({ updatedAt: Date.now(), folders });
+  const obj = { updatedAt: Date.now(), folders };
+  publishIdeSnapshot("workspace", obj);
+  const payload = JSON.stringify(obj);
   if (payload === lastWorkspaceWritten) return;
   lastWorkspaceWritten = payload;
   void fs.promises
@@ -161,8 +166,8 @@ function writeWorkspaceInfo(): void {
 //
 // pi 进程在终端，拿不到 VSCode 合并后的语言扩展配置（默认值+用户设置+工作区
 // 设置+语言段覆盖等）。这里用 getConfiguration(section, { resource, languageId })
-// 拿到与编辑器「逐位一致」的最终生效值，写成 language-config.json 供 pi 侧的
-// run_diagnostics 工具读取，让 CLI 诊断与工作区/编辑器行为对齐。
+// 拿到与编辑器「逐位一致」的最终生效值，经 named pipe 给 pi 侧 run_diagnostics；
+// language-config.json 只作调试落盘。
 //
 // 关键：语言段覆盖（如 "[python]": {...}、"[vue]": {...}）只在传入 languageId
 // 时生效；folder 级配置需要传入 resource（用第一个工作区根目录作代表）。
@@ -220,7 +225,9 @@ function collectLanguageConfig(): LanguageConfigSnapshot {
 
 let lastLanguageConfigWritten = "";
 function writeLanguageConfig(): void {
-  const payload = JSON.stringify(collectLanguageConfig());
+  const obj = collectLanguageConfig();
+  publishIdeSnapshot("languageConfig", obj);
+  const payload = JSON.stringify(obj);
   if (payload === lastLanguageConfigWritten) return;
   lastLanguageConfigWritten = payload;
   void fs.promises
@@ -296,23 +303,20 @@ function collectContext(): EditorContext | undefined {
   return base;
 }
 
-/** 把上下文写盘（pi 扩展读取）。仅在内容变化时写，避免无谓 IO。 */
+/** 发布上下文快照（pipe）并调试落盘。仅在内容变化时写文件。 */
 let lastWritten = "";
 function writeContext(): void {
   if (!contextEnabled) {
-    // 关闭时写 enabled=false，让 pi 扩展停止注入
-    writeRaw(
-      JSON.stringify({
-        enabled: false,
-        updatedAt: Date.now(),
-      } satisfies EditorContext),
-    );
+    const disabled: EditorContext = { enabled: false, updatedAt: Date.now() };
+    publishIdeSnapshot("context", disabled);
+    writeRaw(JSON.stringify(disabled));
     return;
   }
   const ctx = collectContext();
   // 关键：焦点在终端/面板（无活动文本编辑器）时保留上一次的有效上下文，
   // 不用空内容覆盖——否则打开 pi 终端后上下文立即丢失。
   if (!ctx) return;
+  publishIdeSnapshot("context", ctx);
   // 只更新时间戳以外的字段变化才重写（updatedAt 每次不同，比较时排除）
   const { updatedAt: _ignore, ...rest } = ctx;
   const fingerprint = JSON.stringify(rest);
@@ -450,14 +454,11 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // 退出时按设置写开关，避免 reload 后残留 enabled=false 误导 pi 侧注入。
-  // 设置开启时不置 false：扩展 reload 后 onStartupFinished 会自动重新激活并刷新上下文。
+  // 退出时按设置写调试 JSON。设置开启时不置 false：reload 后会重新激活并刷新快照。
   try {
-    fs.writeFileSync(
-      contextFilePath(),
-      JSON.stringify({ enabled: contextEnabled, updatedAt: Date.now() }),
-      "utf8",
-    );
+    const obj = { enabled: contextEnabled, updatedAt: Date.now() };
+    publishIdeSnapshot("context", obj);
+    fs.writeFileSync(contextFilePath(), JSON.stringify(obj), "utf8");
   } catch {
     /* 忽略 */
   }

@@ -6,6 +6,13 @@ export const ENV_TOKEN = "PI_VSCODE_BROWSER_TOKEN";
 /** 单行 JSON 上限（截图 base64 可能到数 MB） */
 export const MAX_LINE_BYTES = 20 * 1024 * 1024;
 
+export const IDE_METHODS = new Set([
+  "get_context",
+  "get_diagnostics",
+  "get_workspace",
+  "get_language_config",
+]);
+
 export const PI_TO_VSCODE_TOOL: Record<string, string> = {
   vscode_browser_open_page: "open_browser_page",
   vscode_browser_read_page: "read_page",
@@ -33,8 +40,13 @@ export interface BrowserIpcResponse {
   id: string;
   ok: boolean;
   text?: string;
+  data?: unknown;
   image?: BrowserIpcImage;
   error?: string;
+}
+
+export function isIdeMethod(name: string): boolean {
+  return IDE_METHODS.has(name);
 }
 
 export function mapToolName(name: string): string {
@@ -86,6 +98,7 @@ export function parseResponse(line: string): BrowserIpcResponse {
   const res: BrowserIpcResponse = { id: obj.id, ok: obj.ok };
   if (typeof obj.text === "string") res.text = obj.text;
   if (typeof obj.error === "string") res.error = obj.error;
+  if ("data" in obj) res.data = obj.data;
   if (obj.image && typeof obj.image === "object") {
     const img = obj.image as Record<string, unknown>;
     if (typeof img.mimeType === "string" && typeof img.data === "string") {

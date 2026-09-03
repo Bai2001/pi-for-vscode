@@ -7,8 +7,8 @@
 //
 //   复用同一套配置文件（tsconfig.json / pyrightconfig.json / [tool.basedpyright]），
 //   这些文件语言服务器和 CLI 都会向上探测并读取，天然一致；编辑器侧的语言
-//   配置（typescript.tsdk、basedpyright.analysis.* 等）经 language-config.json
-//   由 VSCode 扩展合并后中转过来作兜底。
+//   配置（typescript.tsdk、basedpyright.analysis.* 等）经 named pipe 由 VSCode
+//   扩展合并后中转过来作兜底（language-config.json 只是宿主调试落盘）。
 //
 // 执行器探测（先判断有没有，没有就交给包管理器临时执行，不报错）：
 //   TS：项目本地 node_modules bin -> vp dlx / npm exec / pnpm dlx
@@ -25,10 +25,11 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { callIpcData } from "./vscode-ipc";
 
 interface CliDiagnostic {
   file: string;
@@ -62,34 +63,18 @@ interface LanguageConfig {
   };
 }
 
-// 与 VSCode 扩展一致的编码
-const IDE_DIR = join(
-  homedir(),
-  ".pi",
-  "agent",
-  "vscode-ide",
-  process
-    .cwd()
-    .replace(/[^a-zA-Z0-9]/g, "-")
-    .toLowerCase(),
-);
-const DIAGNOSTICS_FILE = join(IDE_DIR, "diagnostics.json");
-const LANGUAGE_CONFIG_FILE = join(IDE_DIR, "language-config.json");
-
 /** 单次 CLI 检查超时（vue-tsc/tsc 全项目检查慢，给足时间） */
 const CLI_TIMEOUT_MS = 180_000;
 /** 单语言最大文件数（防误用） */
 const MAX_FILES = 50;
 
-// ============ 读取语言配置快照 ============
-function readLanguageConfig(): LanguageConfig | undefined {
+// ============ 读取语言配置快照（named pipe）============
+async function fetchLanguageConfig(): Promise<LanguageConfig | undefined> {
   try {
-    const raw = JSON.parse(
-      readFileSync(LANGUAGE_CONFIG_FILE, "utf8"),
-    ) as LanguageConfig;
+    const raw = await callIpcData<LanguageConfig>("get_language_config");
     if (typeof raw?.updatedAt === "number") return raw;
   } catch {
-    /* 扩展未写入 */
+    /* 扩展未运行或未注入 pipe */
   }
   return undefined;
 }
@@ -519,22 +504,21 @@ function parseRuff(text: string): CliDiagnostic[] {
 }
 
 // ============ VSCode 诊断读取（用于合并互补）============
-function readVscodeDiagnostics():
+async function fetchVscodeDiagnostics(): Promise<
   | { total: number; items: VscodeDiagnostic[] }
-  | undefined {
+  | undefined
+> {
   try {
-    const raw = JSON.parse(readFileSync(DIAGNOSTICS_FILE, "utf8")) as {
+    const raw = await callIpcData<{
       total: number;
       roots?: Array<{ root: string; diagnostics?: VscodeDiagnostic[] }>;
-      diagnostics?: VscodeDiagnostic[];
-    };
+    }>("get_diagnostics");
+    if (!raw) return undefined;
     const items: VscodeDiagnostic[] = [];
     if (Array.isArray(raw.roots)) {
       for (const r of raw.roots) {
         items.push(...(r.diagnostics ?? []));
       }
-    } else if (Array.isArray(raw.diagnostics)) {
-      items.push(...raw.diagnostics);
     }
     return { total: raw.total ?? items.length, items };
   } catch {
@@ -565,7 +549,7 @@ export default function (pi: ExtensionAPI): void {
     name: "run_diagnostics",
     label: "运行语言诊断（CLI）",
     description:
-      "用命令行语言检查器（vue-tsc / tsc / basedpyright + ruff）对项目做无头、全量的诊断，覆盖 VSCode 只能看到已打开文件的局限（如 Vue/Volar 只诊断可见编辑器）。配置与编辑器一致：复用项目的 tsconfig/pyrightconfig/[tool.basedpyright]（语言服务器与 CLI 都读这些文件，天然一致），VSCode 语言扩展配置经 language-config.json 兜底。返回 CLI 诊断并合并 VSCode 全局诊断去重互补。",
+      "用命令行语言检查器（vue-tsc / tsc / basedpyright + ruff）对项目做无头、全量的诊断，覆盖 VSCode 只能看到已打开文件的局限（如 Vue/Volar 只诊断可见编辑器）。配置与编辑器一致：复用项目的 tsconfig/pyrightconfig/[tool.basedpyright]（语言服务器与 CLI 都读这些文件，天然一致），VSCode 语言扩展配置经 named pipe 兜底。返回 CLI 诊断并合并 VSCode 全局诊断去重互补。",
     promptSnippet: "运行 CLI 语言诊断（vue/ts/py）",
     promptGuidelines: [
       "改完代码后做最终验证时用此工具（全量、无头、可靠）；快速看当前编辑器错误用 vscode_get_diagnostics。",
@@ -599,7 +583,7 @@ export default function (pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params) {
       const cwd = process.cwd();
-      const config = readLanguageConfig();
+      const config = await fetchLanguageConfig();
 
       const files = resolveFiles(cwd, params.files);
       const language = inferLanguage(params.language, files);
@@ -616,7 +600,7 @@ export default function (pi: ExtensionAPI): void {
         cliNote = `检查器执行异常：${e instanceof Error ? e.message : String(e)}`;
       }
 
-      const vscode = readVscodeDiagnostics();
+      const vscode = await fetchVscodeDiagnostics();
 
       const { merged, cliCount, vscodeMatched, vscodeUnique } =
         mergeDiagnostics(cliItems, vscode?.items ?? [], files, cwd);

@@ -4,6 +4,7 @@ import {
   adaptArgs,
   encodeMessage,
   extractLines,
+  isIdeMethod,
   mapToolName,
   parseRequest,
   parseResponse,
@@ -65,6 +66,22 @@ describe("browser-protocol", () => {
 
   it("open 缺 url 抛错", () => {
     assert.throws(() => adaptArgs("open_browser_page", {}, undefined), /url/);
+  });
+
+  it("响应可带结构化 data", () => {
+    const raw = encodeMessage({
+      id: "c",
+      ok: true,
+      data: { folders: [{ name: "app", path: "/x" }] },
+    });
+    const res = parseResponse(raw.trimEnd());
+    assert.deepEqual(res.data, { folders: [{ name: "app", path: "/x" }] });
+  });
+
+  it("识别 ide 查询方法", () => {
+    assert.equal(isIdeMethod("get_context"), true);
+    assert.equal(isIdeMethod("get_diagnostics"), true);
+    assert.equal(isIdeMethod("vscode_browser_open_page"), false);
   });
 
   it("playwright 按 schema 把 code 改名为 script", () => {

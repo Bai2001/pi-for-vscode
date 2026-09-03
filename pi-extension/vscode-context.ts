@@ -1,12 +1,11 @@
 // pi-for-vscode 编辑器上下文注入扩展（运行在终端的 pi 进程内）
-// 读取 VSCode 扩展写入的 ~/.pi/agent/vscode-ide/<key>/{context.json,workspace.json}，
+// 经 named pipe 向 VSCode 宿主查询上下文/工作区（JSON 文件仅宿主调试落盘，此处不读）。
 // 1. 在每次 agent 启动前把当前编辑器上下文 + 工作区结构追加到系统提示词
 //    （before_agent_start 的 systemPrompt 追加，非替换、非塞进用户消息）；
 // 2. 在输入框上边框右侧幽灵显示工作区根名 + 当前活动文件（给编辑器 render 打补丁）。
-import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { CustomEditor, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
+import { callIpcData, hasIpc } from "./vscode-ipc";
 
 interface EditorContext {
   enabled: boolean;
@@ -34,37 +33,23 @@ interface WorkspaceInfo {
   folders: WorkspaceFolderInfo[];
 }
 
-// 与 VSCode 扩展一致的编码：cwd 非字母数字转 -，转小写。
-// pi 进程 cwd = 终端启动目录 = VSCode 工作区第一个根，同一窗口的 pi 进程共享同一目录。
-const IDE_DIR = join(
-  homedir(),
-  ".pi",
-  "agent",
-  "vscode-ide",
-  process
-    .cwd()
-    .replace(/[^a-zA-Z0-9]/g, "-")
-    .toLowerCase(),
-);
-const CONTEXT_FILE = join(IDE_DIR, "context.json");
-const WORKSPACE_FILE = join(IDE_DIR, "workspace.json");
-
-function readContext(): EditorContext | undefined {
+async function fetchContext(): Promise<EditorContext | undefined> {
+  if (!hasIpc()) return undefined;
   try {
-    const raw = readFileSync(CONTEXT_FILE, "utf8");
-    const ctx = JSON.parse(raw) as EditorContext;
-    // VSCode 关闭时扩展会写入 enabled:false，这里只需信任文件内容
-    // （不做时间过期检查：焦点在 pi 终端时上下文本就不再刷新，但仍是用户需要的）
-    if (!ctx.enabled) return undefined;
+    const ctx = await callIpcData<EditorContext>("get_context");
+    if (!ctx?.enabled) return undefined;
     return ctx;
   } catch {
     return undefined;
   }
 }
 
-function readWorkspace(): WorkspaceInfo | undefined {
+async function fetchWorkspace(): Promise<WorkspaceInfo | undefined> {
+  if (!hasIpc()) return undefined;
   try {
-    return JSON.parse(readFileSync(WORKSPACE_FILE, "utf8")) as WorkspaceInfo;
+    const ws = await callIpcData<WorkspaceInfo>("get_workspace");
+    if (!ws || !Array.isArray(ws.folders)) return undefined;
+    return ws;
   } catch {
     return undefined;
   }
@@ -123,9 +108,8 @@ function buildInjection(
 }
 
 export default function (pi: ExtensionAPI): void {
-  pi.on("before_agent_start", (event) => {
-    const ctx = readContext();
-    const ws = readWorkspace();
+  pi.on("before_agent_start", async (event) => {
+    const [ctx, ws] = await Promise.all([fetchContext(), fetchWorkspace()]);
     const injection = buildInjection(ctx, ws);
     if (!injection) return undefined;
     // 追加到现有系统提示词（保留 pi 原有的全部系统提示词）
@@ -136,13 +120,12 @@ export default function (pi: ExtensionAPI): void {
 }
 
 // ===== 输入框上边框右侧的幽灵显示：工作区根名 + 当前活动文件 =====
-// 纯展示（不参与输入），数据与系统提示词注入同源（vscode-ide/*.json），
-// 随 VSCode 侧写入自动更新。
+// 纯展示（不参与输入），数据与系统提示词注入同源（named pipe 快照）。
 
 const HINT_MIN_WIDTH = 40; // 终端列宽窄于此值不显示
 const HINT_MAX_WIDTH = 40; // 标签最大可见宽度（还会按编辑器实际列宽再收）
 const HINT_MIN_BORDER = 16; // 上边框至少保留的 ─ 列数，避免盒子看起来残缺
-const HINT_REFRESH_MS = 1500; // 轮询 json 文件变化的间隔
+const HINT_REFRESH_MS = 1500; // 经 pipe 刷新标签的间隔
 
 // 本地实现可见宽度 / 截断，避免运行时依赖 pi-tui 的工具函数
 // （边框行只有 SGR 序列，文件夹名可能含 CJK 宽字符）
@@ -206,23 +189,17 @@ interface HintParts {
 }
 
 interface HintCache {
-  wsMtime: number;
-  ctxMtime: number;
+  fp: string;
   parts?: HintParts;
 }
 
-let hintCache: HintCache = { wsMtime: -1, ctxMtime: -1 };
+let hintCache: HintCache = { fp: "" };
+let hintRefreshing = false;
 
-function mtimeOf(file: string): number {
-  try {
-    return statSync(file).mtimeMs;
-  } catch {
-    return -1;
-  }
-}
-
-function computeHintParts(): HintParts | undefined {
-  const ws = readWorkspace();
+function computeHintParts(
+  ws: WorkspaceInfo | undefined,
+  editorCtx: EditorContext | undefined,
+): HintParts | undefined {
   if (!ws || ws.folders.length === 0) return undefined;
   // Windows 路径大小写不敏感，统一小写比较（同 buildWorkspaceSection）
   const cwdLower = process.cwd().toLowerCase();
@@ -230,7 +207,6 @@ function computeHintParts(): HintParts | undefined {
 
   let root = cwdFolder.name;
   let file = "";
-  const editorCtx = readContext();
   if (editorCtx?.activeFile) {
     // 多根工作区显示文件所属根，而不是 cwd+N（后者既占宽度又看不出文件在哪）
     root = editorCtx.activeFileRootName ?? cwdFolder.name;
@@ -300,14 +276,26 @@ function formatHintLabel(parts: HintParts, maxWidth: number): string {
   return `${truncateVisual(full, Math.max(1, maxWidth - 3))}...`;
 }
 
-/** 按文件 mtime 缓存原始片段，截断在 render 时按实际列宽做 */
+/** render 只读缓存；后台经 pipe 刷新 */
 function getHintParts(): HintParts | undefined {
-  const wsMtime = mtimeOf(WORKSPACE_FILE);
-  const ctxMtime = mtimeOf(CONTEXT_FILE);
-  if (wsMtime !== hintCache.wsMtime || ctxMtime !== hintCache.ctxMtime) {
-    hintCache = { wsMtime, ctxMtime, parts: computeHintParts() };
-  }
   return hintCache.parts;
+}
+
+async function refreshHintParts(): Promise<boolean> {
+  if (!hasIpc() || hintRefreshing) return false;
+  hintRefreshing = true;
+  try {
+    const [ctx, ws] = await Promise.all([fetchContext(), fetchWorkspace()]);
+    const parts = computeHintParts(ws, ctx);
+    const fp = JSON.stringify(parts ?? null);
+    if (fp === hintCache.fp) return false;
+    hintCache = { fp, parts };
+    return true;
+  } catch {
+    return false;
+  } finally {
+    hintRefreshing = false;
+  }
 }
 
 type EditorLike = { render(width: number): string[] };
@@ -421,6 +409,9 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
       ensure: ensureWrapped,
       requestRender: (force?: boolean) => tuiRef?.requestRender(force),
     };
+    void refreshHintParts().then((changed) => {
+      if (changed) hintState?.requestRender();
+    });
     // pi-open-tui 会在 session_start 里清屏（\x1b[2J），TUI 不知情仍做差分刷新，
     // 欢迎页/边框留在 previousLines 里以为没变，屏幕就空了。拖动分割条会走
     // requestRender(true) → resetRenderState → 全量重绘才恢复。
@@ -430,19 +421,20 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
       t.unref?.();
       delayTimers.push(t);
     }
-    // 1. 编辑器工厂被其他扩展替换后重新包装并全量重绘；2. VSCode 侧更新 json 后差分刷新标签
+    // 1. 编辑器工厂被其他扩展替换后重新包装并全量重绘；2. pipe 快照变化后差分刷新标签
     if (hintTimer === undefined) {
       hintTimer = setInterval(() => {
-        try {
-          const rewrapped = hintState?.ensure() ?? false;
-          const before = hintCache.parts;
-          getHintParts();
-          if (rewrapped) hintState?.requestRender(true);
-          else if (hintCache.parts !== before) hintState?.requestRender();
-        } catch {
-          // /reload、/new 等会让旧 ctx 失效；漏清理时也不能让 uncaughtException 打崩进程
-          stopHintTimer();
-        }
+        void (async () => {
+          try {
+            const rewrapped = hintState?.ensure() ?? false;
+            const changed = await refreshHintParts();
+            if (rewrapped) hintState?.requestRender(true);
+            else if (changed) hintState?.requestRender();
+          } catch {
+            // /reload、/new 等会让旧 ctx 失效；漏清理时也不能让 uncaughtException 打崩进程
+            stopHintTimer();
+          }
+        })();
       }, HINT_REFRESH_MS);
       hintTimer.unref?.();
     }

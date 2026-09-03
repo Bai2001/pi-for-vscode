@@ -1,12 +1,9 @@
 // pi-for-vscode 工作区诊断工具（运行在终端的 pi 进程内）
-// 读取 VSCode 扩展实时写入的 ~/.pi/agent/vscode-ide/<key>/diagnostics.json，
-// 注册 vscode_get_diagnostics 工具，让 agent 获取工作区错误/警告。
-// 多根工作区：诊断按根分组存储，支持按根名/路径子串过滤。
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+// 经 named pipe 向 VSCode 宿主查询诊断（JSON 文件仅宿主调试落盘，此处不读）。
+// 多根工作区：诊断按根分组，支持按根名/路径子串过滤。
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { callIpcData } from "./vscode-ipc";
 
 interface DiagnosticItem {
   file: string;
@@ -32,55 +29,10 @@ interface DiagnosticsFile {
   roots: RootDiagnostics[];
 }
 
-/** 旧格式（v0.4.x 及以前）：诊断平铺在 diagnostics 字段，无根分组 */
-interface LegacyDiagnosticsFile {
-  updatedAt: number;
-  total: number;
-  truncated: boolean;
-  diagnostics: DiagnosticItem[];
-}
-
-// 与 VSCode 扩展一致的编码：cwd 非字母数字转 -，转小写。
-// pi 进程 cwd = 终端启动目录 = VSCode 工作区第一个根，同一窗口的 pi 进程共享同一目录。
-const DIAGNOSTICS_FILE = join(
-  homedir(),
-  ".pi",
-  "agent",
-  "vscode-ide",
-  process
-    .cwd()
-    .replace(/[^a-zA-Z0-9]/g, "-")
-    .toLowerCase(),
-  "diagnostics.json",
-);
-
-/**
- * 读取诊断文件。兼容旧格式：旧格式没有 roots 字段（诊断平铺在 diagnostics），
- * 包成单个「未知根」分组，保证旧扩展 + 新 pi 端组合不报错。
- */
-function readDiagnostics(): DiagnosticsFile | undefined {
+async function fetchDiagnostics(): Promise<DiagnosticsFile | undefined> {
   try {
-    const raw = JSON.parse(
-      readFileSync(DIAGNOSTICS_FILE, "utf8"),
-    ) as DiagnosticsFile | LegacyDiagnosticsFile;
-    if (Array.isArray((raw as DiagnosticsFile).roots)) {
-      return raw as DiagnosticsFile;
-    }
-    if (Array.isArray((raw as LegacyDiagnosticsFile).diagnostics)) {
-      const legacy = raw as LegacyDiagnosticsFile;
-      return {
-        updatedAt: legacy.updatedAt,
-        total: legacy.total,
-        truncated: legacy.truncated,
-        roots: [
-          {
-            root: process.cwd(),
-            rootName: "工作区",
-            diagnostics: legacy.diagnostics,
-          },
-        ],
-      };
-    }
+    const raw = await callIpcData<DiagnosticsFile>("get_diagnostics");
+    if (raw && Array.isArray(raw.roots)) return raw;
     return undefined;
   } catch {
     return undefined;
@@ -115,11 +67,11 @@ export default function (pi: ExtensionAPI): void {
       ),
     }),
     async execute(_toolCallId, params) {
-      const data = readDiagnostics();
+      const data = await fetchDiagnostics();
       if (!data) {
         // 报错用 throw：execute return 里的 isError 会被运行时忽略（pi 文档明确）
         throw new Error(
-          "无法读取 VSCode 诊断数据（VSCode 扩展未运行或尚未写入）。请确认 pi-for-vscode 扩展已在 VSCode 中激活。",
+          "无法获取 VSCode 诊断数据。请用扩展命令「pi：打开终端会话」启动 pi，并确认 pi-for-vscode 已激活。",
         );
       }
 

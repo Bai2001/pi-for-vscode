@@ -7,6 +7,7 @@
 - 编辑器标题栏 / 命令面板执行 `pi：打开终端会话`，在编辑器区右侧分屏打开 pi 终端
 - 自动把活动编辑器的文件路径与选中代码注入 pi 系统提示词
 - 桥接 VSCode 集成浏览器：pi 可用 `vscode_browser_open_page` / `read_page` / `screenshot` / `playwright` 操作页面（需用本命令打开终端，VSCode ≥ 1.110）
+- 编辑器上下文、诊断与浏览器均走 named pipe；`~/.pi/agent/vscode-ide/` 下 JSON 仅供调试查看
 
 ## 配置
 

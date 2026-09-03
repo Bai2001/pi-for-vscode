@@ -12,12 +12,14 @@ import {
   ENV_IPC,
   ENV_TOKEN,
   extractLines,
+  isIdeMethod,
   mapToolName,
   parseRequest,
   timeoutForTool,
   type BrowserIpcImage,
   type BrowserIpcResponse,
 } from "./browser-protocol.js";
+import { getIdeSnapshot, ideKeyFromMethod } from "./ide-store.js";
 
 export interface BrowserIpcHandle {
   readonly env: Record<string, string>;
@@ -210,6 +212,15 @@ async function handleLine(
     if (req.token !== expectedToken) {
       writeResponse(socket, { id, ok: false, error: "鉴权失败" });
       socket.destroy();
+      return;
+    }
+    if (isIdeMethod(req.tool)) {
+      const key = ideKeyFromMethod(req.tool);
+      writeResponse(socket, {
+        id,
+        ok: true,
+        data: key ? getIdeSnapshot(key) : null,
+      });
       return;
     }
     const vscodeTool = mapToolName(req.tool);
