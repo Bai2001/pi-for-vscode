@@ -151,3 +151,7 @@ export async function callIpcData<T>(
   if (res.data === undefined || res.data === null) return null;
   return res.data as T;
 }
+
+// 本文件是共享客户端，不是扩展入口；但会被同步到 ~/.pi/agent/extensions/*.ts，
+// pi 会把该目录下每个 .ts 当扩展加载，因此必须导出空工厂，否则启动失败。
+export default function (): void {}
