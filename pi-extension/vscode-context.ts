@@ -1,11 +1,16 @@
 // pi-for-vscode 编辑器上下文注入扩展（运行在终端的 pi 进程内）
-// 经 named pipe 向 VSCode 宿主查询上下文/工作区（JSON 文件仅宿主调试落盘，此处不读）。
+// 经 named pipe 向 VSCode 宿主查询/订阅上下文与工作区（JSON 文件仅宿主调试落盘，此处不读）。
 // 1. 在每次 agent 启动前把当前编辑器上下文 + 工作区结构追加到系统提示词
 //    （before_agent_start 的 systemPrompt 追加，非替换、非塞进用户消息）；
 // 2. 在输入框上边框右侧幽灵显示工作区根名 + 当前活动文件（给编辑器 render 打补丁）。
 import { join } from "node:path";
 import { CustomEditor, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { callIpcData, hasIpc } from "./vscode-ipc";
+import {
+  callIpcData,
+  hasIpc,
+  subscribeIde,
+  type IdeSubscribeData,
+} from "./vscode-ipc";
 
 interface EditorContext {
   enabled: boolean;
@@ -33,7 +38,27 @@ interface WorkspaceInfo {
   folders: WorkspaceFolderInfo[];
 }
 
+let haveLiveContext = false;
+let haveLiveWorkspace = false;
+let liveContext: EditorContext | undefined;
+let liveWorkspace: WorkspaceInfo | undefined;
+
+function parseEditorContext(raw: unknown): EditorContext | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const ctx = raw as EditorContext;
+  if (!ctx.enabled) return undefined;
+  return ctx;
+}
+
+function parseWorkspace(raw: unknown): WorkspaceInfo | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const ws = raw as WorkspaceInfo;
+  if (!Array.isArray(ws.folders)) return undefined;
+  return ws;
+}
+
 async function fetchContext(): Promise<EditorContext | undefined> {
+  if (haveLiveContext) return liveContext;
   if (!hasIpc()) return undefined;
   try {
     const ctx = await callIpcData<EditorContext>("get_context");
@@ -45,6 +70,7 @@ async function fetchContext(): Promise<EditorContext | undefined> {
 }
 
 async function fetchWorkspace(): Promise<WorkspaceInfo | undefined> {
+  if (haveLiveWorkspace) return liveWorkspace;
   if (!hasIpc()) return undefined;
   try {
     const ws = await callIpcData<WorkspaceInfo>("get_workspace");
@@ -108,6 +134,8 @@ function buildInjection(
 }
 
 export default function (pi: ExtensionAPI): void {
+  startIdeSubscription();
+
   pi.on("before_agent_start", async (event) => {
     const [ctx, ws] = await Promise.all([fetchContext(), fetchWorkspace()]);
     const injection = buildInjection(ctx, ws);
@@ -120,12 +148,11 @@ export default function (pi: ExtensionAPI): void {
 }
 
 // ===== 输入框上边框右侧的幽灵显示：工作区根名 + 当前活动文件 =====
-// 纯展示（不参与输入），数据与系统提示词注入同源（named pipe 快照）。
+// 纯展示（不参与输入），数据与系统提示词注入同源（subscribe_ide 推送）。
 
 const HINT_MIN_WIDTH = 40; // 终端列宽窄于此值不显示
 const HINT_MAX_WIDTH = 40; // 标签最大可见宽度（还会按编辑器实际列宽再收）
 const HINT_MIN_BORDER = 16; // 上边框至少保留的 ─ 列数，避免盒子看起来残缺
-const HINT_REFRESH_MS = 1500; // 经 pipe 刷新标签的间隔
 
 // 本地实现可见宽度 / 截断，避免运行时依赖 pi-tui 的工具函数
 // （边框行只有 SGR 序列，文件夹名可能含 CJK 宽字符）
@@ -193,8 +220,15 @@ interface HintCache {
   parts?: HintParts;
 }
 
+interface HintState {
+  /** 检查当前生效的编辑器工厂是否仍是我们的包装，被其他扩展替换则重新包装。返回是否刚重新包装。 */
+  ensure: () => boolean;
+  requestRender: (force?: boolean) => void;
+}
+
 let hintCache: HintCache = { fp: "" };
-let hintRefreshing = false;
+let stopSubscribe: (() => void) | undefined;
+const hintSessions = new Set<HintState>();
 
 function computeHintParts(
   ws: WorkspaceInfo | undefined,
@@ -276,26 +310,48 @@ function formatHintLabel(parts: HintParts, maxWidth: number): string {
   return `${truncateVisual(full, Math.max(1, maxWidth - 3))}...`;
 }
 
-/** render 只读缓存；后台经 pipe 刷新 */
+/** render 只读缓存；内容由 subscribe_ide 推送更新 */
 function getHintParts(): HintParts | undefined {
   return hintCache.parts;
 }
 
-async function refreshHintParts(): Promise<boolean> {
-  if (!hasIpc() || hintRefreshing) return false;
-  hintRefreshing = true;
-  try {
-    const [ctx, ws] = await Promise.all([fetchContext(), fetchWorkspace()]);
-    const parts = computeHintParts(ws, ctx);
-    const fp = JSON.stringify(parts ?? null);
-    if (fp === hintCache.fp) return false;
-    hintCache = { fp, parts };
-    return true;
-  } catch {
-    return false;
-  } finally {
-    hintRefreshing = false;
+function syncHintCache(): boolean {
+  const parts = computeHintParts(liveWorkspace, liveContext);
+  const fp = JSON.stringify(parts ?? null);
+  if (fp === hintCache.fp) return false;
+  hintCache = { fp, parts };
+  return true;
+}
+
+function applyIdePush(data: IdeSubscribeData): boolean {
+  if ("context" in data) {
+    haveLiveContext = true;
+    liveContext = parseEditorContext(data.context);
   }
+  if ("workspace" in data) {
+    haveLiveWorkspace = true;
+    liveWorkspace = parseWorkspace(data.workspace);
+  }
+  return syncHintCache();
+}
+
+function notifyHintSessions(changed: boolean): void {
+  for (const session of [...hintSessions]) {
+    try {
+      const rewrapped = session.ensure();
+      if (rewrapped) session.requestRender(true);
+      else if (changed) session.requestRender();
+    } catch {
+      hintSessions.delete(session);
+    }
+  }
+}
+
+function startIdeSubscription(): void {
+  if (stopSubscribe || !hasIpc()) return;
+  stopSubscribe = subscribeIde((data) => {
+    notifyHintSessions(applyIdePush(data));
+  });
 }
 
 type EditorLike = { render(width: number): string[] };
@@ -346,29 +402,20 @@ function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Them
   return editor;
 }
 
-interface HintState {
-  /** 检查当前生效的编辑器工厂是否仍是我们的包装，被其他扩展替换则重新包装。返回是否刚重新包装。 */
-  ensure: () => boolean;
-  requestRender: (force?: boolean) => void;
-}
-
 function registerWorkspaceHint(pi: ExtensionAPI): void {
   let hintState: HintState | undefined;
-  let hintTimer: ReturnType<typeof setInterval> | undefined;
   const delayTimers: ReturnType<typeof setTimeout>[] = [];
 
-  const stopHintTimer = () => {
-    if (hintTimer !== undefined) {
-      clearInterval(hintTimer);
-      hintTimer = undefined;
-    }
+  const stopHintSession = () => {
     for (const t of delayTimers) clearTimeout(t);
     delayTimers.length = 0;
+    if (hintState) hintSessions.delete(hintState);
     hintState = undefined;
   };
 
   pi.on("session_start", (_event, ctx) => {
     if (!ctx.hasUI) return;
+    stopHintSession();
     let tuiRef: { requestRender(force?: boolean): void } | undefined;
     // 当前被包装的工厂（pi-open-tui 的圆角编辑器工厂，或 undefined 用默认编辑器兜底）
     let innerFactory: ReturnType<typeof ctx.ui.getEditorComponent>;
@@ -390,8 +437,8 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
         }
       });
     };
-    // 扩展是异步逐个加载的，pi-open-tui 可能在我们之后才注册它的工厂，
-    // 一次性延迟注册不可靠；由定时器持续检查，被替换后重新包装
+    // 扩展是异步逐个加载的，pi-open-tui 可能在我们之后才注册它的工厂。
+    // 数据靠 subscribe_ide 推送；这里只在启动延迟和每次推送时重新包装。
     const ensureWrapped = (): boolean => {
       try {
         const current = ctx.ui.getEditorComponent();
@@ -400,7 +447,7 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
         ctx.ui.setEditorComponent(wrapperFactory);
         return true;
       } catch {
-        stopHintTimer();
+        stopHintSession();
         return false;
       }
     };
@@ -409,39 +456,24 @@ function registerWorkspaceHint(pi: ExtensionAPI): void {
       ensure: ensureWrapped,
       requestRender: (force?: boolean) => tuiRef?.requestRender(force),
     };
-    void refreshHintParts().then((changed) => {
-      if (changed) hintState?.requestRender();
-    });
+    hintSessions.add(hintState);
+    if (hintCache.parts) hintState.requestRender();
     // pi-open-tui 会在 session_start 里清屏（\x1b[2J），TUI 不知情仍做差分刷新，
     // 欢迎页/边框留在 previousLines 里以为没变，屏幕就空了。拖动分割条会走
     // requestRender(true) → resetRenderState → 全量重绘才恢复。
-    // 普通 requestRender() 不够；启动后强制全量重绘几次。
-    for (const ms of [50, 250, 800]) {
-      const t = setTimeout(() => hintState?.requestRender(true), ms);
+    // 普通 requestRender() 不够；启动后强制全量重绘几次，并顺带重新包装工厂。
+    for (const ms of [50, 250, 800, 2000]) {
+      const t = setTimeout(() => {
+        hintState?.ensure();
+        hintState?.requestRender(true);
+      }, ms);
       t.unref?.();
       delayTimers.push(t);
     }
-    // 1. 编辑器工厂被其他扩展替换后重新包装并全量重绘；2. pipe 快照变化后差分刷新标签
-    if (hintTimer === undefined) {
-      hintTimer = setInterval(() => {
-        void (async () => {
-          try {
-            const rewrapped = hintState?.ensure() ?? false;
-            const changed = await refreshHintParts();
-            if (rewrapped) hintState?.requestRender(true);
-            else if (changed) hintState?.requestRender();
-          } catch {
-            // /reload、/new 等会让旧 ctx 失效；漏清理时也不能让 uncaughtException 打崩进程
-            stopHintTimer();
-          }
-        })();
-      }, HINT_REFRESH_MS);
-      hintTimer.unref?.();
-    }
   });
 
-  // 定时器闭包了 session_start 的 ctx；/reload、/new、/resume、/fork 会 invalidate 旧 ctx
+  // 会话 ctx 会在 /reload、/new、/resume、/fork 时失效
   pi.on("session_shutdown", () => {
-    stopHintTimer();
+    stopHintSession();
   });
 }

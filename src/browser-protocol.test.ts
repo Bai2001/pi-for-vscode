@@ -82,6 +82,7 @@ describe("browser-protocol", () => {
     assert.equal(isIdeMethod("get_context"), true);
     assert.equal(isIdeMethod("get_diagnostics"), true);
     assert.equal(isIdeMethod("vscode_browser_open_page"), false);
+    assert.equal(isIdeMethod("subscribe_ide"), false);
   });
 
   it("playwright 按 schema 把 code 改名为 script", () => {

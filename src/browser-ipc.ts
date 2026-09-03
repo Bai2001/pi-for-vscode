@@ -15,11 +15,17 @@ import {
   isIdeMethod,
   mapToolName,
   parseRequest,
+  SUBSCRIBE_IDE,
   timeoutForTool,
   type BrowserIpcImage,
   type BrowserIpcResponse,
 } from "./browser-protocol.js";
-import { getIdeSnapshot, ideKeyFromMethod } from "./ide-store.js";
+import {
+  getIdeSnapshot,
+  ideKeyFromMethod,
+  onIdeSnapshot,
+  type IdeSnapshotKey,
+} from "./ide-store.js";
 
 export interface BrowserIpcHandle {
   readonly env: Record<string, string>;
@@ -139,10 +145,48 @@ function writeResponse(socket: net.Socket, res: BrowserIpcResponse): void {
   socket.write(encodeMessage(res));
 }
 
+interface IdeSubscriber {
+  id: string;
+  socket: net.Socket;
+}
+
+function idePushData(
+  key: IdeSnapshotKey,
+  value: unknown,
+): { context: unknown } | { workspace: unknown } | undefined {
+  if (key === "context") return { context: value };
+  if (key === "workspace") return { workspace: value };
+  return undefined;
+}
+
+function pushSubscriber(sub: IdeSubscriber, data: unknown, subscribers: Set<IdeSubscriber>): void {
+  if (sub.socket.destroyed) {
+    subscribers.delete(sub);
+    return;
+  }
+  try {
+    sub.socket.write(encodeMessage({ id: sub.id, ok: true, data }), (err) => {
+      if (err) {
+        subscribers.delete(sub);
+        sub.socket.destroy();
+      }
+    });
+  } catch {
+    subscribers.delete(sub);
+    sub.socket.destroy();
+  }
+}
+
 export function startBrowserIpc(): BrowserIpcHandle {
   const id = randomUUID().replace(/-/g, "").slice(0, 16);
   const path = pipePath(id);
   const token = newToken();
+  const subscribers = new Set<IdeSubscriber>();
+  const unsubscribe = onIdeSnapshot((key, value) => {
+    const data = idePushData(key, value);
+    if (!data) return;
+    for (const sub of [...subscribers]) pushSubscriber(sub, data, subscribers);
+  });
   const server = net.createServer((socket) => {
     let buf: Buffer = Buffer.alloc(0);
     socket.on("data", (chunk) => {
@@ -152,7 +196,7 @@ export function startBrowserIpc(): BrowserIpcHandle {
         buf = extracted.rest;
         for (const line of extracted.lines) {
           if (!line.trim()) continue;
-          void handleLine(socket, token, line);
+          void handleLine(socket, token, line, subscribers);
         }
       } catch (err) {
         writeResponse(socket, {
@@ -188,6 +232,9 @@ export function startBrowserIpc(): BrowserIpcHandle {
       [ENV_TOKEN]: token,
     },
     dispose() {
+      unsubscribe();
+      for (const sub of subscribers) sub.socket.destroy();
+      subscribers.clear();
       server.close();
       if (process.platform !== "win32") {
         try {
@@ -204,6 +251,7 @@ async function handleLine(
   socket: net.Socket,
   expectedToken: string,
   line: string,
+  subscribers: Set<IdeSubscriber>,
 ): Promise<void> {
   let id = "?";
   try {
@@ -212,6 +260,22 @@ async function handleLine(
     if (req.token !== expectedToken) {
       writeResponse(socket, { id, ok: false, error: "鉴权失败" });
       socket.destroy();
+      return;
+    }
+    if (req.tool === SUBSCRIBE_IDE) {
+      const sub: IdeSubscriber = { id, socket };
+      const remove = () => subscribers.delete(sub);
+      socket.on("close", remove);
+      socket.on("error", remove);
+      subscribers.add(sub);
+      writeResponse(socket, {
+        id,
+        ok: true,
+        data: {
+          context: getIdeSnapshot("context"),
+          workspace: getIdeSnapshot("workspace"),
+        },
+      });
       return;
     }
     if (isIdeMethod(req.tool)) {

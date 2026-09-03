@@ -13,6 +13,9 @@ export const IDE_METHODS = new Set([
   "get_language_config",
 ]);
 
+/** 长连接订阅：宿主在 context/workspace 变化时持续推送，不关闭 socket。 */
+export const SUBSCRIBE_IDE = "subscribe_ide";
+
 export const PI_TO_VSCODE_TOOL: Record<string, string> = {
   vscode_browser_open_page: "open_browser_page",
   vscode_browser_read_page: "read_page",

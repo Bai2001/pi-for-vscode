@@ -152,6 +152,94 @@ export async function callIpcData<T>(
   return res.data as T;
 }
 
+export interface IdeSubscribeData {
+  context?: unknown;
+  workspace?: unknown;
+}
+
+/** 长连接订阅 context/workspace 推送。返回取消函数。 */
+export function subscribeIde(onData: (data: IdeSubscribeData) => void): () => void {
+  if (!hasIpc()) return () => undefined;
+  let closed = false;
+  let socket: net.Socket | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnecting = false;
+  let attempt = 0;
+
+  const clearRetry = () => {
+    if (retryTimer === undefined) return;
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+  };
+
+  const scheduleReconnect = () => {
+    if (closed || reconnecting) return;
+    reconnecting = true;
+    socket?.destroy();
+    socket = undefined;
+    const delay = Math.min(1000 * 2 ** attempt, 8000);
+    attempt += 1;
+    retryTimer = setTimeout(() => {
+      reconnecting = false;
+      connect();
+    }, delay);
+    retryTimer.unref?.();
+  };
+
+  const connect = () => {
+    if (closed) return;
+    clearRetry();
+    const { path, token } = requireIpc();
+    const id = randomUUID();
+    const s = net.connect({ path });
+    socket = s;
+    let buf: Buffer = Buffer.alloc(0);
+
+    s.on("connect", () => {
+      attempt = 0;
+      s.write(`${JSON.stringify({ id, token, tool: "subscribe_ide", args: {} })}\n`);
+    });
+    s.on("data", (chunk) => {
+      try {
+        buf = Buffer.concat([buf, chunk]);
+        const extracted = extractLines(buf);
+        buf = extracted.rest;
+        for (const line of extracted.lines) {
+          if (!line.trim()) continue;
+          const res = parseResponse(line);
+          if (!res.ok) {
+            s.destroy();
+            return;
+          }
+          if (res.data && typeof res.data === "object") {
+            onData(res.data as IdeSubscribeData);
+          }
+        }
+      } catch {
+        s.destroy();
+      }
+    });
+    s.on("error", () => {
+      if (socket !== s) return;
+      scheduleReconnect();
+    });
+    s.on("close", () => {
+      if (socket !== s) return;
+      scheduleReconnect();
+    });
+  };
+
+  connect();
+
+  return () => {
+    closed = true;
+    clearRetry();
+    reconnecting = true;
+    socket?.destroy();
+    socket = undefined;
+  };
+}
+
 // 本文件是共享客户端，不是扩展入口；但会被同步到 ~/.pi/agent/extensions/*.ts，
 // pi 会把该目录下每个 .ts 当扩展加载，因此必须导出空工厂，否则启动失败。
 export default function (): void {}
