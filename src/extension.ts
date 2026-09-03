@@ -1,14 +1,10 @@
 // pi-for-vscode 扩展宿主（极简版）
-// 职责：编辑器区分屏打开 pi 终端 + 把编辑器上下文写入共享文件供 pi 扩展注入系统提示词。
+// 职责：编辑器区分屏打开 pi 终端 + 把编辑器上下文写入共享快照供 pi 扩展注入。
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import {
-  maybePromptAutoApprove,
-  startBrowserIpc,
-  type BrowserIpcHandle,
-} from "./browser-ipc.js";
+import { maybePromptAutoApprove, startBrowserIpc, type BrowserIpcHandle } from "./browser-ipc.js";
 import { publishIdeSnapshot } from "./ide-store.js";
 import { syncPiExtensions } from "./sync-pi-extension.js";
 import { registerUpdateChecker } from "./update.js";

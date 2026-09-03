@@ -1,16 +1,13 @@
 // pi-for-vscode 编辑器上下文注入扩展（运行在终端的 pi 进程内）
 // 经 named pipe 向 VSCode 宿主查询/订阅上下文与工作区（JSON 文件仅宿主调试落盘，此处不读）。
-// 1. 在每次 agent 启动前把当前编辑器上下文 + 工作区结构追加到系统提示词
-//    （before_agent_start 的 systemPrompt 追加，非替换、非塞进用户消息）；
-// 2. 在输入框上边框右侧幽灵显示工作区根名 + 当前活动文件（给编辑器 render 打补丁）。
+// 1. 工作区结构追加到系统提示词（稳定环境，每轮覆盖同一段）；
+// 2. 活动文件/选区作为 custom 消息插在本轮用户消息后，仅在变化或压缩丢失时插入；
+// 3. 输入框上边框右侧幽灵显示工作区根名 + 当前活动文件（给编辑器 render 打补丁）。
 import { join } from "node:path";
 import { CustomEditor, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import {
-  callIpcData,
-  hasIpc,
-  subscribeIde,
-  type IdeSubscribeData,
-} from "./vscode-ipc";
+import { callIpcData, hasIpc, subscribeIde, type IdeSubscribeData } from "./vscode-ipc";
+
+const EDITOR_CONTEXT_CUSTOM_TYPE = "vscode-editor-context";
 
 interface EditorContext {
   enabled: boolean;
@@ -36,6 +33,110 @@ interface WorkspaceFolderInfo {
 interface WorkspaceInfo {
   updatedAt: number;
   folders: WorkspaceFolderInfo[];
+}
+
+interface EditorContextDetails {
+  fingerprint: string;
+  summary: string;
+}
+
+interface ContextEntryLike {
+  type?: string;
+  customType?: string;
+  details?: unknown;
+}
+
+function editorContextFingerprint(ctx: EditorContext | undefined): string | undefined {
+  if (!ctx?.enabled || !ctx.activeFile) return undefined;
+  return JSON.stringify({
+    activeFile: ctx.activeFile,
+    activeFileRoot: ctx.activeFileRoot,
+    language: ctx.language,
+    selection: ctx.selection,
+    selectionStartLine: ctx.selectionStartLine,
+    selectionEndLine: ctx.selectionEndLine,
+    cursorLine: ctx.cursorLine,
+  });
+}
+
+function shouldInjectEditorContext(
+  currentFingerprint: string | undefined,
+  lastFingerprint: string | undefined,
+): boolean {
+  if (!currentFingerprint) return false;
+  return currentFingerprint !== lastFingerprint;
+}
+
+function lastInjectedFingerprint(entries: readonly ContextEntryLike[]): string | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry?.type !== "custom_message" || entry.customType !== EDITOR_CONTEXT_CUSTOM_TYPE) {
+      continue;
+    }
+    const fp = (entry.details as EditorContextDetails | undefined)?.fingerprint;
+    return typeof fp === "string" ? fp : undefined;
+  }
+  return undefined;
+}
+
+function buildWorkspaceSystemPrompt(
+  ws: WorkspaceInfo | undefined,
+  cwd: string,
+): string | undefined {
+  if (!ws || ws.folders.length === 0) return undefined;
+  const cwdLower = cwd.toLowerCase();
+  const lines: string[] = ["## VSCode 工作区"];
+  if (ws.folders.length === 1) {
+    lines.push(`当前工作区根目录: ${ws.folders[0].path}`);
+  } else {
+    lines.push(`本窗口是多根工作区，共 ${ws.folders.length} 个根目录:`);
+    for (const f of ws.folders) {
+      const isCwd = f.path.toLowerCase() === cwdLower;
+      lines.push(`- ${f.name} → ${f.path}${isCwd ? " ← 当前 cwd" : ""}`);
+    }
+    lines.push("");
+    lines.push("提示：跨根目录操作时，使用上述绝对路径访问其他根下的文件。");
+  }
+  return lines.join("\n");
+}
+
+function describeActiveFile(ctx: EditorContext): string {
+  if (!ctx.activeFile) return "";
+  if (ctx.activeFileRoot) {
+    const full = join(ctx.activeFileRoot, ctx.activeFile);
+    return `\`${ctx.activeFile}\`（属于根 ${ctx.activeFileRootName ?? ctx.activeFileRoot}，完整路径: ${full}）`;
+  }
+  return `\`${ctx.activeFile}\`（工作区外文件）`;
+}
+
+function buildEditorContextContent(ctx: EditorContext | undefined): string | undefined {
+  if (!ctx?.activeFile) return undefined;
+  const lines: string[] = ["## VSCode 编辑器上下文"];
+  lines.push(`当前活动文件: ${describeActiveFile(ctx)}${ctx.language ? ` [${ctx.language}]` : ""}`);
+  if (ctx.selection !== undefined && ctx.selectionStartLine !== undefined) {
+    lines.push(`用户选中了第 ${ctx.selectionStartLine}-${ctx.selectionEndLine} 行:`);
+    lines.push("```" + (ctx.language ?? ""));
+    lines.push(ctx.selection);
+    lines.push("```");
+  } else if (ctx.cursorLine !== undefined) {
+    lines.push(`光标位于第 ${ctx.cursorLine} 行（无选区）。`);
+  }
+  return lines.join("\n");
+}
+
+function buildEditorContextSummary(ctx: EditorContext | undefined): string | undefined {
+  if (!ctx?.activeFile) return undefined;
+  if (ctx.selectionStartLine !== undefined && ctx.selectionEndLine !== undefined) {
+    const range =
+      ctx.selectionStartLine === ctx.selectionEndLine
+        ? `${ctx.selectionStartLine}`
+        : `${ctx.selectionStartLine}-${ctx.selectionEndLine}`;
+    return `VSCode 选中 ${ctx.activeFile}:${range}`;
+  }
+  if (ctx.cursorLine !== undefined) {
+    return `VSCode 活动文件 ${ctx.activeFile}:${ctx.cursorLine}`;
+  }
+  return `VSCode 活动文件 ${ctx.activeFile}`;
 }
 
 let haveLiveContext = false;
@@ -81,74 +182,58 @@ async function fetchWorkspace(): Promise<WorkspaceInfo | undefined> {
   }
 }
 
-/** 把工作区结构渲染为系统提示词片段。 */
-function buildWorkspaceSection(ws: WorkspaceInfo | undefined): string[] {
-  if (!ws || ws.folders.length === 0) return [];
-  // Windows 路径大小写不敏感（VSCode 写小写 c:\，process.cwd() 是大写 C:\），统一转小写比较
-  const cwdLower = process.cwd().toLowerCase();
-  const lines: string[] = [];
-  lines.push("## VSCode 工作区");
-  if (ws.folders.length === 1) {
-    lines.push(`当前工作区根目录: ${ws.folders[0].path}`);
-  } else {
-    lines.push(`本窗口是多根工作区，共 ${ws.folders.length} 个根目录:`);
-    for (const f of ws.folders) {
-      const isCwd = f.path.toLowerCase() === cwdLower;
-      lines.push(`- ${f.name} → ${f.path}${isCwd ? " ← 当前 cwd" : ""}`);
-    }
-    lines.push("");
-    lines.push("提示：跨根目录操作时，使用上述绝对路径访问其他根下的文件。");
-  }
-  return lines;
-}
-
-function buildInjection(
-  ctx: EditorContext | undefined,
-  ws: WorkspaceInfo | undefined,
-): string | undefined {
-  const sections: string[] = [];
-
-  const wsSection = buildWorkspaceSection(ws);
-  if (wsSection.length > 0) sections.push(wsSection.join("\n"));
-
-  if (ctx?.activeFile) {
-    const lines: string[] = [];
-    lines.push("## VSCode 编辑器上下文");
-    const fileDesc = ctx.activeFileRoot
-      ? `\`${ctx.activeFile}\`（属于根 ${ctx.activeFileRootName ?? ctx.activeFileRoot}，完整路径: ${join(ctx.activeFileRoot, ctx.activeFile)}）`
-      : `\`${ctx.activeFile}\`（工作区外文件）`;
-    lines.push(`当前活动文件: ${fileDesc}${ctx.language ? ` [${ctx.language}]` : ""}`);
-    if (ctx.selection !== undefined && ctx.selectionStartLine !== undefined) {
-      lines.push(`用户选中了第 ${ctx.selectionStartLine}-${ctx.selectionEndLine} 行:`);
-      lines.push("```" + (ctx.language ?? ""));
-      lines.push(ctx.selection);
-      lines.push("```");
-    } else if (ctx.cursorLine !== undefined) {
-      lines.push(`光标位于第 ${ctx.cursorLine} 行（无选区）。`);
-    }
-    sections.push(lines.join("\n"));
-  }
-
-  if (sections.length === 0) return undefined;
-  return sections.join("\n\n");
-}
-
 export default function (pi: ExtensionAPI): void {
   startIdeSubscription();
+  registerEditorContextRenderer(pi);
 
-  pi.on("before_agent_start", async (event) => {
-    const [ctx, ws] = await Promise.all([fetchContext(), fetchWorkspace()]);
-    const injection = buildInjection(ctx, ws);
-    if (!injection) return undefined;
-    // 追加到现有系统提示词（保留 pi 原有的全部系统提示词）
-    return { systemPrompt: `${event.systemPrompt}\n\n${injection}` };
+  pi.on("before_agent_start", async (event, session) => {
+    const [editor, ws] = await Promise.all([fetchContext(), fetchWorkspace()]);
+    const workspacePrompt = buildWorkspaceSystemPrompt(ws, process.cwd());
+    const content = buildEditorContextContent(editor);
+    const summary = buildEditorContextSummary(editor);
+    const fingerprint = editorContextFingerprint(editor);
+    const lastFp = lastInjectedFingerprint(session.sessionManager.buildContextEntries());
+    const injectEditor =
+      content !== undefined &&
+      summary !== undefined &&
+      fingerprint !== undefined &&
+      shouldInjectEditorContext(fingerprint, lastFp);
+
+    if (!workspacePrompt && !injectEditor) return undefined;
+    return {
+      ...(workspacePrompt ? { systemPrompt: `${event.systemPrompt}\n\n${workspacePrompt}` } : {}),
+      ...(injectEditor
+        ? {
+            message: {
+              customType: EDITOR_CONTEXT_CUSTOM_TYPE,
+              content,
+              display: true,
+              details: { fingerprint, summary } satisfies EditorContextDetails,
+            },
+          }
+        : {}),
+    };
   });
 
   registerWorkspaceHint(pi);
 }
 
+function registerEditorContextRenderer(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer(EDITOR_CONTEXT_CUSTOM_TYPE, (message, _options, theme) => {
+    const details = message.details as EditorContextDetails | undefined;
+    const summary =
+      details?.summary ??
+      (typeof message.content === "string" ? message.content.split("\n")[0] : undefined) ??
+      "VSCode 编辑器上下文";
+    return {
+      render: () => [theme.fg("dim", summary)],
+      invalidate() {},
+    };
+  });
+}
+
 // ===== 输入框上边框右侧的幽灵显示：工作区根名 + 当前活动文件 =====
-// 纯展示（不参与输入），数据与系统提示词注入同源（subscribe_ide 推送）。
+// 纯展示（不参与输入），数据与注入同源（subscribe_ide 推送）。
 
 const HINT_MIN_WIDTH = 40; // 终端列宽窄于此值不显示
 const HINT_MAX_WIDTH = 40; // 标签最大可见宽度（还会按编辑器实际列宽再收）
@@ -235,7 +320,7 @@ function computeHintParts(
   editorCtx: EditorContext | undefined,
 ): HintParts | undefined {
   if (!ws || ws.folders.length === 0) return undefined;
-  // Windows 路径大小写不敏感，统一小写比较（同 buildWorkspaceSection）
+  // Windows 路径大小写不敏感，统一小写比较（同 buildWorkspaceSystemPrompt）
   const cwdLower = process.cwd().toLowerCase();
   const cwdFolder = ws.folders.find((f) => f.path.toLowerCase() === cwdLower) ?? ws.folders[0];
 

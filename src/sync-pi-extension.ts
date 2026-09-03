@@ -11,14 +11,17 @@ function piExtensionsDir(): string {
   return path.join(os.homedir(), ".pi", "agent", "extensions");
 }
 
+/** 同步到 ~/.pi/agent/extensions 的源文件：入口/共享模块，不含测试。 */
+export function isPiExtensionSourceFile(name: string): boolean {
+  return name.endsWith(".ts") && !name.endsWith(".test.ts");
+}
+
 /**
  * 把扩展内置的 pi-extension/*.ts 同步到 ~/.pi/agent/extensions/。
  * 策略：直接全量覆盖（用户的改动应该在项目源码里改，而不是在同步目标里改）。
  * 异步执行，不阻塞激活；失败仅记录日志 + 一次性通知。
  */
-export async function syncPiExtensions(
-  context: vscode.ExtensionContext,
-): Promise<void> {
+export async function syncPiExtensions(context: vscode.ExtensionContext): Promise<void> {
   const srcDir = path.join(context.extensionPath, "pi-extension");
   const destDir = piExtensionsDir();
 
@@ -31,7 +34,7 @@ export async function syncPiExtensions(
   }
 
   const tsFiles = entries
-    .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+    .filter((e) => e.isFile() && isPiExtensionSourceFile(e.name))
     .map((e) => e.name);
   if (tsFiles.length === 0) return;
 
@@ -66,10 +69,7 @@ export async function syncPiExtensions(
   }
 
   if (updated.length > 0) {
-    console.log(
-      `[pi-for-vscode] 已同步 ${updated.length} 个 pi 扩展文件:`,
-      updated.join(", "),
-    );
+    console.log(`[pi-for-vscode] 已同步 ${updated.length} 个 pi 扩展文件:`, updated.join(", "));
   }
   if (failed.length > 0) {
     console.error("[pi-for-vscode] 部分 pi 扩展文件同步失败:", failed);
