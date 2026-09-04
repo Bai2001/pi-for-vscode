@@ -52,19 +52,12 @@ export default function (pi: ExtensionAPI): void {
     ],
     parameters: Type.Object({
       severity: Type.Optional(
-        Type.Union(
-          [Type.Literal("error"), Type.Literal("warning"), Type.Literal("all")],
-          {
-            description: "严重级别过滤，默认 error",
-          },
-        ),
+        Type.Union([Type.Literal("error"), Type.Literal("warning"), Type.Literal("all")], {
+          description: "严重级别过滤，默认 error",
+        }),
       ),
-      file: Type.Optional(
-        Type.String({ description: "文件路径子串过滤（如 src/app）" }),
-      ),
-      root: Type.Optional(
-        Type.String({ description: "根目录名或路径子串过滤（如 backend）" }),
-      ),
+      file: Type.Optional(Type.String({ description: "文件路径子串过滤（如 src/app）" })),
+      root: Type.Optional(Type.String({ description: "根目录名或路径子串过滤（如 backend）" })),
     }),
     async execute(_toolCallId, params) {
       const data = await fetchDiagnostics();
@@ -80,19 +73,15 @@ export default function (pi: ExtensionAPI): void {
       if (params.root) {
         const needle = (params.root as string).toLowerCase();
         roots = roots.filter(
-          (r) =>
-            r.rootName.toLowerCase().includes(needle) ||
-            r.root.toLowerCase().includes(needle),
+          (r) => r.rootName.toLowerCase().includes(needle) || r.root.toLowerCase().includes(needle),
         );
       }
 
       const groups = roots
         .map((r) => {
           let items = r.diagnostics;
-          if (severity !== "all")
-            items = items.filter((d) => d.severity === severity);
-          if (params.file)
-            items = items.filter((d) => d.file.includes(params.file as string));
+          if (severity !== "all") items = items.filter((d) => d.severity === severity);
+          if (params.file) items = items.filter((d) => d.file.includes(params.file as string));
           return { rootName: r.rootName, root: r.root, items };
         })
         .filter((g) => g.items.length > 0);

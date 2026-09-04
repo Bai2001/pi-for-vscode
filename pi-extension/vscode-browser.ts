@@ -4,13 +4,11 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { callIpc, type IpcResponse } from "./vscode-ipc";
 
-function textAndImage(res: IpcResponse): Array<
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string }
-> {
+function textAndImage(
+  res: IpcResponse,
+): Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> {
   const content: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; data: string; mimeType: string }
+    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
   > = [];
   if (res.text) content.push({ type: "text", text: res.text });
   if (res.image) {
@@ -43,12 +41,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, signal) {
-      const res = await callIpc(
-        "vscode_browser_open_page",
-        { url: params.url },
-        120_000,
-        signal,
-      );
+      const res = await callIpc("vscode_browser_open_page", { url: params.url }, 120_000, signal);
       return { content: textAndImage(res), details: undefined };
     },
   });
@@ -91,9 +84,7 @@ export default function (pi: ExtensionAPI): void {
       pageId: Type.String({
         description: "vscode_browser_open_page 返回的 pageId",
       }),
-      selector: Type.Optional(
-        Type.String({ description: "可选 CSS 选择器，只截该元素" }),
-      ),
+      selector: Type.Optional(Type.String({ description: "可选 CSS 选择器，只截该元素" })),
       ref: Type.Optional(
         Type.String({
           description: "vscode_browser_read_page 得到的 aria-ref，替代 selector",

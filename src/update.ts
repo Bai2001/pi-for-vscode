@@ -33,9 +33,7 @@ interface ReleaseInfo {
  * 无法解析的版本号一律视为相等（不提示更新，避免骚扰）。
  */
 function compareVersions(a: string, b: string): number {
-  const parse = (
-    v: string,
-  ): { nums: [number, number, number]; pre: string } | null => {
+  const parse = (v: string): { nums: [number, number, number]; pre: string } | null => {
     const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(v.trim());
     if (!m) return null;
     return {
@@ -68,12 +66,7 @@ function httpsGet(url: string, accept: string, redirects = 5): Promise<Buffer> {
       (res) => {
         const status = res.statusCode ?? 0;
         // GitHub 资源下载会 302 到 CDN，需要跟随
-        if (
-          status >= 300 &&
-          status < 400 &&
-          res.headers.location &&
-          redirects > 0
-        ) {
+        if (status >= 300 && status < 400 && res.headers.location && redirects > 0) {
           res.resume();
           resolve(httpsGet(res.headers.location, accept, redirects - 1));
           return;
@@ -101,18 +94,11 @@ function httpsGet(url: string, accept: string, redirects = 5): Promise<Buffer> {
  * prerelease：直接取第一条 entry（可能含预发布）。
  * VSIX 下载地址按 CI 打包规则拼接（pi-for-vscode-<version>.vsix）。
  */
-async function fetchLatestRelease(
-  channel: string,
-): Promise<ReleaseInfo | null> {
-  const body = await httpsGet(
-    `${WEB_BASE}/releases.atom`,
-    "application/atom+xml",
-  );
+async function fetchLatestRelease(channel: string): Promise<ReleaseInfo | null> {
+  const body = await httpsGet(`${WEB_BASE}/releases.atom`, "application/atom+xml");
   const text = body.toString("utf8");
   // atom 按发布时间倒序，每个 entry 内含 /releases/tag/<tag> 链接
-  const tags = [
-    ...text.matchAll(/<entry>[\s\S]*?\/releases\/tag\/([^"<]+)"/g),
-  ].map((m) => m[1]);
+  const tags = [...text.matchAll(/<entry>[\s\S]*?\/releases\/tag\/([^"<]+)"/g)].map((m) => m[1]);
   if (tags.length === 0) return null;
 
   let tag: string | undefined;
@@ -135,8 +121,7 @@ async function fetchLatestRelease(
 
 /** 下载 VSIX 到临时目录（带进度通知），返回本地路径 */
 async function downloadVsix(release: ReleaseInfo): Promise<string> {
-  if (!release.vsixUrl || !release.vsixName)
-    throw new Error("Release 未附带 VSIX 文件");
+  if (!release.vsixUrl || !release.vsixName) throw new Error("Release 未附带 VSIX 文件");
   const target = path.join(os.tmpdir(), release.vsixName);
   return vscode.window.withProgress(
     {
@@ -183,10 +168,7 @@ async function downloadAndInstall(release: ReleaseInfo): Promise<void> {
  * 检查更新主流程。
  * manual=true（手动命令）时无论结果都给出反馈；自动触发时失败与无更新均静默。
  */
-async function checkForUpdate(
-  context: vscode.ExtensionContext,
-  manual: boolean,
-): Promise<void> {
+async function checkForUpdate(context: vscode.ExtensionContext, manual: boolean): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("pi-for-vscode");
   if (!manual && !cfg.get<boolean>("update.enabled", true)) return;
   const channel = cfg.get<string>("update.channel", "stable");
@@ -204,17 +186,11 @@ async function checkForUpdate(
     return;
   }
   if (!release) {
-    if (manual)
-      void vscode.window.showInformationMessage(
-        "检查更新失败：未找到发布信息。",
-      );
+    if (manual) void vscode.window.showInformationMessage("检查更新失败：未找到发布信息。");
     return;
   }
   if (compareVersions(release.version, current) <= 0) {
-    if (manual)
-      void vscode.window.showInformationMessage(
-        `当前已是最新版本 v${current}。`,
-      );
+    if (manual) void vscode.window.showInformationMessage(`当前已是最新版本 v${current}。`);
     return;
   }
 
@@ -243,15 +219,8 @@ export function registerUpdateChecker(context: vscode.ExtensionContext): void {
     ),
   );
 
-  if (
-    vscode.workspace
-      .getConfiguration("pi-for-vscode")
-      .get<boolean>("update.enabled", true)
-  ) {
-    const timer = setTimeout(
-      () => void checkForUpdate(context, false),
-      AUTO_CHECK_DELAY_MS,
-    );
+  if (vscode.workspace.getConfiguration("pi-for-vscode").get<boolean>("update.enabled", true)) {
+    const timer = setTimeout(() => void checkForUpdate(context, false), AUTO_CHECK_DELAY_MS);
     context.subscriptions.push({ dispose: () => clearTimeout(timer) });
   }
 }

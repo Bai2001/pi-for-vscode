@@ -112,9 +112,7 @@ export function parseResponse(line: string): BrowserIpcResponse {
 }
 
 /** 从字节缓冲切出完整行；超长行抛错。 */
-export function extractLines(
-  buffer: Buffer,
-): { lines: string[]; rest: Buffer } {
+export function extractLines(buffer: Buffer): { lines: string[]; rest: Buffer } {
   const lines: string[] = [];
   let start = 0;
   for (let i = 0; i < buffer.length; i++) {
@@ -169,9 +167,7 @@ export function adaptArgs(
   return out;
 }
 
-function schemaProperties(
-  inputSchema: unknown,
-): Record<string, unknown> | undefined {
+function schemaProperties(inputSchema: unknown): Record<string, unknown> | undefined {
   if (!inputSchema || typeof inputSchema !== "object") return undefined;
   const props = (inputSchema as { properties?: unknown }).properties;
   if (!props || typeof props !== "object") return undefined;

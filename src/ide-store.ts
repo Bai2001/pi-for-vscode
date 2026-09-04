@@ -1,10 +1,6 @@
 /** 宿主内存快照：pipe 查询用；JSON 文件只是同内容的调试落盘。 */
 
-export type IdeSnapshotKey =
-  | "context"
-  | "diagnostics"
-  | "workspace"
-  | "languageConfig";
+export type IdeSnapshotKey = "context" | "diagnostics" | "workspace" | "languageConfig";
 
 export type IdeSnapshotListener = (key: IdeSnapshotKey, value: unknown) => void;
 

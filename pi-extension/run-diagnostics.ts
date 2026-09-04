@@ -19,12 +19,7 @@
 //
 // 返回时与 VSCode 全局诊断合并去重，互相补足。
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
@@ -118,10 +113,7 @@ function run(
 // scripts（用户自定义脚本无法保证与语言服务器行为一致，反而破坏语义）。
 
 /** 向上查找目录里是否存在满足条件的文件/目录 */
-function findUp(
-  startDir: string,
-  needle: (d: string) => boolean,
-): string | undefined {
+function findUp(startDir: string, needle: (d: string) => boolean): string | undefined {
   let dir = startDir;
   while (true) {
     if (needle(dir)) return dir;
@@ -143,9 +135,9 @@ function nodeRun(
   const pkgDir = findUp(cwd, (d) => existsSync(join(d, pkgJson)));
   if (!pkgDir) return undefined;
   try {
-    const pkg = JSON.parse(
-      readFileSync(join(pkgDir, pkgJson), "utf8"),
-    ) as { bin?: string | Record<string, string> };
+    const pkg = JSON.parse(readFileSync(join(pkgDir, pkgJson), "utf8")) as {
+      bin?: string | Record<string, string>;
+    };
     const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.[binKey];
     if (!bin) return undefined;
     const entry = join(pkgDir, "node_modules", packageName, bin);
@@ -195,21 +187,11 @@ const JS_PKG_MANAGERS: Array<{
   },
   {
     cmd: "npm",
-    run: (bin, extra) => [
-      "exec",
-      "--yes",
-      ...extra.flatMap((p) => ["--package", p]),
-      "--",
-      bin,
-    ],
+    run: (bin, extra) => ["exec", "--yes", ...extra.flatMap((p) => ["--package", p]), "--", bin],
   },
   {
     cmd: "pnpm",
-    run: (bin, extra) => [
-      "dlx",
-      ...extra.map((p) => `--package=${p}`),
-      bin,
-    ],
+    run: (bin, extra) => ["dlx", ...extra.map((p) => `--package=${p}`), bin],
   },
 ];
 
@@ -235,9 +217,7 @@ function resolveTsCmd(cwd: string): { cmd: string; args: string[] } | undefined 
   const found = nodeRun(cwd, "typescript", tscArgs, "tsc");
   if (found) return found;
   // 2. 兜底：pnpm 符号链接结构下 package.json 的 bin 可能不是标准入口
-  const tscJs = findUp(cwd, (d) =>
-    existsSync(join(d, "node_modules", "typescript", "bin", "tsc")),
-  );
+  const tscJs = findUp(cwd, (d) => existsSync(join(d, "node_modules", "typescript", "bin", "tsc")));
   if (tscJs) {
     const entry = join(tscJs, "node_modules", "typescript", "bin", "tsc");
     if (existsSync(entry)) {
@@ -257,10 +237,7 @@ function resolveVueCmd(cwd: string): { cmd: string; args: string[] } | undefined
   //    注意：vue-tsc 必须配套 typescript 5.x（TS7 Go 版无 Compiler API，
   //    且新版 JS 线 exports 不再暴露 ./lib/tsc，vue-tsc 启动即崩）。
   //    实测需同时临时拉取 vue-tsc + typescript@5 并锁版。
-  return resolveJsRunner("vue-tsc", ["--noEmit", "--pretty", "false"], [
-    "vue-tsc",
-    "typescript@5",
-  ]);
+  return resolveJsRunner("vue-tsc", ["--noEmit", "--pretty", "false"], ["vue-tsc", "typescript@5"]);
 }
 
 // ============ PY（basedpyright 为主，ruff 可选）============
@@ -280,17 +257,14 @@ function resolveVueCmd(cwd: string): { cmd: string; args: string[] } | undefined
  *   python.defaultInterpreterPath -> --pythonpath（CLI flag，改名）
  *   python.venvPath          -> --venvpath（CLI flag，同名）
  */
-function buildBasedpyrightArgs(
-  cwd: string,
-  config: LanguageConfig | undefined,
-): string[] {
+function buildBasedpyrightArgs(cwd: string, config: LanguageConfig | undefined): string[] {
   const args: string[] = [];
 
   // 是否有项目配置文件（pyrightconfig.json 优先于 pyproject.toml）
   const hasProjectConfig =
-    findUp(cwd, (d) =>
-      existsSync(join(d, "pyrightconfig.json")) ||
-      existsSync(join(d, "pyproject.toml")),
+    findUp(
+      cwd,
+      (d) => existsSync(join(d, "pyrightconfig.json")) || existsSync(join(d, "pyproject.toml")),
     ) !== undefined;
 
   const bp = config?.basedpyright;
@@ -300,19 +274,13 @@ function buildBasedpyrightArgs(
   if (!hasProjectConfig) {
     // 1. 解释器路径（python.defaultInterpreterPath -> --pythonpath）
     if (bp?.interpreterPath) {
-      const resolved = resolveWorkspaceVar(
-        bp.interpreterPath,
-        config?.resource ?? null,
-      );
+      const resolved = resolveWorkspaceVar(bp.interpreterPath, config?.resource ?? null);
       if (resolved) args.push("--pythonpath", resolved);
     }
 
     // 2. venv 目录（python.venvPath -> --venvpath）
     if (bp?.venvPath) {
-      const resolved = resolveWorkspaceVar(
-        bp.venvPath,
-        config?.resource ?? null,
-      );
+      const resolved = resolveWorkspaceVar(bp.venvPath, config?.resource ?? null);
       if (resolved) args.push("--venvpath", resolved);
     }
 
@@ -388,18 +356,11 @@ function resolveWorkspaceVar(value: string, resource: string | null): string | n
  * 注意：-p 指定配置文件后，basedpyright 会把「配置文件所在目录」当作项目根，
  * 只分析其下的文件——临时目录里没有代码，会静默返回 0 条诊断。所以必须在
  * 临时配置里用绝对路径 include 把工作区目录显式纳入分析范围。 */
-function makeTempPyrightConfig(
-  typeCheckingMode: string,
-  cwd: string,
-): string | null {
+function makeTempPyrightConfig(typeCheckingMode: string, cwd: string): string | null {
   try {
     const dir = mkdtempSync(join(tmpdir(), "pi-pyright-"));
     const file = join(dir, "pyrightconfig.json");
-    writeFileSync(
-      file,
-      JSON.stringify({ typeCheckingMode, include: [cwd] }),
-      "utf8",
-    );
+    writeFileSync(file, JSON.stringify({ typeCheckingMode, include: [cwd] }), "utf8");
     return file;
   } catch {
     return null;
@@ -411,9 +372,7 @@ function resolveRuffCmd(cwd: string): { cmd: string; args: string[] } | undefine
   // 1. 项目本地 .venv 里的 ruff 优先
   const venvBin = process.platform === "win32" ? "Scripts" : "bin";
   const venvRuff = process.platform === "win32" ? "ruff.exe" : "ruff";
-  const local = findUp(cwd, (d) =>
-    existsSync(join(d, ".venv", venvBin, venvRuff)),
-  );
+  const local = findUp(cwd, (d) => existsSync(join(d, ".venv", venvBin, venvRuff)));
   if (local) {
     return { cmd: join(local, ".venv", venvBin, venvRuff), args: ruffArgs };
   }
@@ -505,8 +464,7 @@ function parseRuff(text: string): CliDiagnostic[] {
 
 // ============ VSCode 诊断读取（用于合并互补）============
 async function fetchVscodeDiagnostics(): Promise<
-  | { total: number; items: VscodeDiagnostic[] }
-  | undefined
+  { total: number; items: VscodeDiagnostic[] } | undefined
 > {
   try {
     const raw = await callIpcData<{
@@ -532,10 +490,7 @@ async function fetchVscodeDiagnostics(): Promise<
  * 盘符大小写可能不同（c:\ vs C:\）。统一为「绝对路径 + 正斜杠 + 盘符小写」。 */
 function diagKey(d: { file: string; line: number; col: number }, cwd: string): string {
   const abs = isAbsolute(d.file) ? d.file : resolve(cwd, d.file);
-  const norm = normPath(abs).replace(
-    /^([A-Z]):\//,
-    (_m, ch: string) => `${ch.toLowerCase()}:/`,
-  );
+  const norm = normPath(abs).replace(/^([A-Z]):\//, (_m, ch: string) => `${ch.toLowerCase()}:/`);
   return `${norm}:${d.line}:${d.col}`;
 }
 
@@ -565,19 +520,13 @@ export default function (pi: ExtensionAPI): void {
       ),
       language: Type.Optional(
         Type.Union(
-          [
-            Type.Literal("ts"),
-            Type.Literal("vue"),
-            Type.Literal("py"),
-            Type.Literal("auto"),
-          ],
+          [Type.Literal("ts"), Type.Literal("vue"), Type.Literal("py"), Type.Literal("auto")],
           { description: "检查语言，默认 auto（按文件扩展名推断）" },
         ),
       ),
       includeRuff: Type.Optional(
         Type.Boolean({
-          description:
-            "py 时是否同时跑 ruff lint，默认 true（项目/系统装有 ruff 才生效）",
+          description: "py 时是否同时跑 ruff lint，默认 true（项目/系统装有 ruff 才生效）",
         }),
       ),
     }),
@@ -602,8 +551,12 @@ export default function (pi: ExtensionAPI): void {
 
       const vscode = await fetchVscodeDiagnostics();
 
-      const { merged, cliCount, vscodeMatched, vscodeUnique } =
-        mergeDiagnostics(cliItems, vscode?.items ?? [], files, cwd);
+      const { merged, cliCount, vscodeMatched, vscodeUnique } = mergeDiagnostics(
+        cliItems,
+        vscode?.items ?? [],
+        files,
+        cwd,
+      );
 
       const text = renderResult({
         language,
@@ -653,10 +606,7 @@ function inferLanguage(
     if (files.some((f) => /\.(ts|tsx)$/i.test(f))) return "ts";
   }
   const cwd = process.cwd();
-  if (
-    existsSync(join(cwd, "pyproject.toml")) ||
-    existsSync(join(cwd, "pyrightconfig.json"))
-  ) {
+  if (existsSync(join(cwd, "pyproject.toml")) || existsSync(join(cwd, "pyrightconfig.json"))) {
     return "py";
   }
   if (existsSync(join(cwd, "package.json"))) {
@@ -728,9 +678,7 @@ function runCliCheck(
   }
   const r = run(bin.cmd, bin.args, cwd);
   return {
-    items: parseTscLines(r.stdout, "tsc").filter(
-      (d) => !d.file.toLowerCase().endsWith(".vue"),
-    ),
+    items: parseTscLines(r.stdout, "tsc").filter((d) => !d.file.toLowerCase().endsWith(".vue")),
     source: "tsc",
   };
 }
@@ -742,9 +690,7 @@ function filterByFiles(
 ): CliDiagnostic[] {
   if (!files) return items;
   const wanted = new Set(
-    files
-      .map((f) => normPath(relative(cwd, f)))
-      .filter((f) => f && !f.startsWith("..")),
+    files.map((f) => normPath(relative(cwd, f))).filter((f) => f && !f.startsWith("..")),
   );
   const wantedAbs = new Set(files.map((f) => normPath(f)));
   return items.filter((d) => {
@@ -858,18 +804,14 @@ function renderResult(args: {
     const items = byFile.get(f)!;
     items.sort(
       (a, b) =>
-        (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1) ||
-        a.line - b.line,
+        (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1) || a.line - b.line,
     );
     lines.push("");
     lines.push(`### ${f}（${items.length} 条）`);
     for (const d of items) {
-      const tag = d.source === "vscode"
-        ? " [vscode]"
-        : ` [${d.source}${d.code ? " " + d.code : ""}]`;
-      lines.push(
-        `${d.severity === "error" ? "✗" : "⚠"} ${d.line}:${d.col} ${d.message}${tag}`,
-      );
+      const tag =
+        d.source === "vscode" ? " [vscode]" : ` [${d.source}${d.code ? " " + d.code : ""}]`;
+      lines.push(`${d.severity === "error" ? "✗" : "⚠"} ${d.line}:${d.col} ${d.message}${tag}`);
     }
   }
 

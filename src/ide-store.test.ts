@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  onIdeSnapshot,
-  publishIdeSnapshot,
-  snapshotFingerprint,
-} from "./ide-store.ts";
+import { onIdeSnapshot, publishIdeSnapshot, snapshotFingerprint } from "./ide-store.ts";
 
 describe("ide-store", () => {
   it("fingerprint 忽略 updatedAt", () => {

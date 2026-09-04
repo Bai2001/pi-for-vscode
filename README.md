@@ -11,8 +11,8 @@
 
 ## 配置
 
-| 配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `pi-for-vscode.context.enabled` | `true` | 把活动编辑器的文件与选区在变化时注入 pi 对话 |
-| `pi-for-vscode.context.maxLines` | `200` | 注入的选区最大行数（超出截断） |
+| 配置项                              | 默认值 | 说明                                                     |
+| ----------------------------------- | ------ | -------------------------------------------------------- |
+| `pi-for-vscode.context.enabled`     | `true` | 把活动编辑器的文件与选区在变化时注入 pi 对话             |
+| `pi-for-vscode.context.maxLines`    | `200`  | 注入的选区最大行数（超出截断）                           |
 | `pi-for-vscode.terminal.splitRight` | `true` | 在编辑器区右侧分屏打开终端（`false` 则使用默认终端位置） |

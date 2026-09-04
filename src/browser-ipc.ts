@@ -96,8 +96,7 @@ async function invokeBrowserTool(
   if (!available.has(vscodeTool)) {
     return {
       ok: false,
-      error:
-        `VSCode 内置浏览器工具「${vscodeTool}」不可用。请确认 VSCode ≥ 1.110，且设置 workbench.browser.enableChatTools 已开启。`,
+      error: `VSCode 内置浏览器工具「${vscodeTool}」不可用。请确认 VSCode ≥ 1.110，且设置 workbench.browser.enableChatTools 已开启。`,
     };
   }
 
@@ -121,8 +120,7 @@ async function invokeBrowserTool(
       return {
         ok: false,
         error:
-          converted.text ||
-          "截图未返回图片。请确认页面已分享给 agent（浏览器标签栏的分享按钮）。",
+          converted.text || "截图未返回图片。请确认页面已分享给 agent（浏览器标签栏的分享按钮）。",
       };
     }
     return { ok: true, text: converted.text || undefined, image: converted.image };
@@ -288,11 +286,7 @@ async function handleLine(
       return;
     }
     const vscodeTool = mapToolName(req.tool);
-    const result = await invokeBrowserTool(
-      vscodeTool,
-      req.args,
-      timeoutForTool(vscodeTool),
-    );
+    const result = await invokeBrowserTool(vscodeTool, req.args, timeoutForTool(vscodeTool));
     writeResponse(socket, { id, ...result });
   } catch (err) {
     writeResponse(socket, {
@@ -311,9 +305,7 @@ function autoApproveEnabled(): boolean {
 }
 
 /** 启动时询问一次是否打开全局自动批准；不静默改设置。 */
-export async function maybePromptAutoApprove(
-  context: vscode.ExtensionContext,
-): Promise<void> {
+export async function maybePromptAutoApprove(context: vscode.ExtensionContext): Promise<void> {
   const browserToolsOn = vscode.workspace
     .getConfiguration("workbench.browser")
     .get<boolean>("enableChatTools", true);

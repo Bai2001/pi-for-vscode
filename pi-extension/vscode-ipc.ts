@@ -28,9 +28,7 @@ function requireIpc(): { path: string; token: string } {
   const path = process.env[ENV_IPC];
   const token = process.env[ENV_TOKEN];
   if (!path || !token) {
-    throw new Error(
-      "不在 VSCode pi 终端中。请用扩展命令「pi：打开终端会话」启动 pi。",
-    );
+    throw new Error("不在 VSCode pi 终端中。请用扩展命令「pi：打开终端会话」启动 pi。");
   }
   return { path, token };
 }
@@ -143,10 +141,7 @@ export function callIpc(
   });
 }
 
-export async function callIpcData<T>(
-  tool: string,
-  timeoutMs = 8_000,
-): Promise<T | null> {
+export async function callIpcData<T>(tool: string, timeoutMs = 8_000): Promise<T | null> {
   const res = await callIpc(tool, {}, timeoutMs);
   if (res.data === undefined || res.data === null) return null;
   return res.data as T;
