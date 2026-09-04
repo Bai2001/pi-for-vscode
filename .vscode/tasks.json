@@ -5,7 +5,7 @@
       "label": "npm: build",
       "type": "npm",
       "script": "build",
-      "problemMatcher": ["$esbuild-watch", "$tsc"],
+      "problemMatcher": ["$tsc"],
       "group": {
         "kind": "build",
         "isDefault": true

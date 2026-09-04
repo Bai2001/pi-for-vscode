@@ -1,11 +1,13 @@
 .vscode/**
 src/**
 docs/**
+.github/**
 node_modules/**
-esbuild.config.mjs
+vite.config.ts
 tsconfig.json
 *.map
 .gitignore
+AGENTS.md
 # pi-extension/*.ts 需要打包进 vsix（激活时同步到 ~/.pi/agent/extensions/），
 # 但排除其 tsconfig（仅用于编辑器类型检查，运行时不需要）
 pi-extension/tsconfig.json

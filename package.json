@@ -98,8 +98,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "node esbuild.config.mjs",
-    "watch": "node esbuild.config.mjs --watch",
+    "build": "vp build",
+    "watch": "vp build --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "package": "vsce package --allow-missing-repository"
   },
@@ -108,7 +108,10 @@
     "@types/node": "^22.15.0",
     "@types/vscode": "^1.110.0",
     "@vscode/vsce": "^3.9.2",
-    "esbuild": "^0.25.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vite-plus": "^0.3.0"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0"
   }
 }
