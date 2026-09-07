@@ -1,7 +1,7 @@
 {
   "name": "pi-for-vscode",
   "displayName": "pi for VSCode",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "在编辑器区分屏打开 pi 终端，并把编辑器上下文注入 pi（个人自用）",
   "categories": [
     "AI",
