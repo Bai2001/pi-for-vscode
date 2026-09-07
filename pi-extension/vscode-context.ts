@@ -2,12 +2,14 @@
 // 经 named pipe 向 VSCode 宿主查询/订阅上下文与工作区（JSON 文件仅宿主调试落盘，此处不读）。
 // 1. 工作区结构追加到系统提示词（稳定环境，每轮覆盖同一段）；
 // 2. 活动文件/选区作为 custom 消息插在本轮用户消息后，仅在变化或压缩丢失时插入；
-// 3. 输入框上边框右侧幽灵显示工作区根名 + 当前活动文件（给编辑器 render 打补丁）。
+// 3. 输入框上方 widget 右对齐显示工作区根名 + 当前活动文件（官方 setWidget，不碰编辑器）。
 import { join } from "node:path";
-import { CustomEditor, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { callIpcData, hasIpc, subscribeIde, type IdeSubscribeData } from "./vscode-ipc";
 
 const EDITOR_CONTEXT_CUSTOM_TYPE = "vscode-editor-context";
+const HINT_WIDGET_KEY = "vscode-editor-hint";
+const HINT_MIN_WIDTH = 8; // 终端列宽窄于此值不显示
 
 interface EditorContext {
   enabled: boolean;
@@ -215,7 +217,7 @@ export default function (pi: ExtensionAPI): void {
     };
   });
 
-  registerWorkspaceHint(pi);
+  registerEditorHintWidget(pi);
 }
 
 function registerEditorContextRenderer(pi: ExtensionAPI): void {
@@ -232,15 +234,8 @@ function registerEditorContextRenderer(pi: ExtensionAPI): void {
   });
 }
 
-// ===== 输入框上边框右侧的幽灵显示：工作区根名 + 当前活动文件 =====
+// ===== 输入框上方：工作区根名 + 当前活动文件 =====
 // 纯展示（不参与输入），数据与注入同源（subscribe_ide 推送）。
-
-const HINT_MIN_WIDTH = 40; // 终端列宽窄于此值不显示
-const HINT_MAX_WIDTH = 40; // 标签最大可见宽度（还会按编辑器实际列宽再收）
-const HINT_MIN_BORDER = 16; // 上边框至少保留的 ─ 列数，避免盒子看起来残缺
-
-// 本地实现可见宽度 / 截断，避免运行时依赖 pi-tui 的工具函数
-// （边框行只有 SGR 序列，文件夹名可能含 CJK 宽字符）
 
 function charWidth(cp: number): number {
   return cp >= 0x1100 &&
@@ -258,39 +253,21 @@ function charWidth(cp: number): number {
     : 1;
 }
 
-// SGR 序列匹配（用 new RegExp 构造，避免正则字面量中的控制字符告警）
-const ESC = String.fromCharCode(27);
-const SGR_RE = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
-const SGR_AT_START_RE = new RegExp(`^${ESC}\\[[0-9;]*m`);
-const SGR_PREFIX_RE = new RegExp(`^(?:${ESC}\\[[0-9;]*m)+`);
-
 function visualWidth(s: string): number {
-  const plain = s.replace(SGR_RE, "");
   let w = 0;
-  for (const ch of plain) w += charWidth(ch.codePointAt(0)!);
+  for (const ch of s) w += charWidth(ch.codePointAt(0)!);
   return w;
 }
 
-/** 按可见宽度截断，保留 SGR 序列（TUI 每行末尾会自动补 reset） */
+/** 按可见宽度截断（文件夹名可能含 CJK 宽字符） */
 function truncateVisual(s: string, maxWidth: number): string {
   let out = "";
   let w = 0;
-  let i = 0;
-  while (i < s.length) {
-    if (s[i] === ESC) {
-      const m = SGR_AT_START_RE.exec(s.slice(i));
-      if (m) {
-        out += m[0];
-        i += m[0].length;
-        continue;
-      }
-    }
-    const cp = s.codePointAt(i)!;
-    const cw = charWidth(cp);
+  for (const ch of s) {
+    const cw = charWidth(ch.codePointAt(0)!);
     if (w + cw > maxWidth) break;
-    out += String.fromCodePoint(cp);
+    out += ch;
     w += cw;
-    i += cp > 0xffff ? 2 : 1;
   }
   return out;
 }
@@ -306,9 +283,8 @@ interface HintCache {
 }
 
 interface HintState {
-  /** 检查当前生效的编辑器工厂是否仍是我们的包装，被其他扩展替换则重新包装。返回是否刚重新包装。 */
-  ensure: () => boolean;
-  requestRender: (force?: boolean) => void;
+  requestRender: () => void;
+  clear: () => void;
 }
 
 let hintCache: HintCache = { fp: "" };
@@ -421,11 +397,10 @@ function applyIdePush(data: IdeSubscribeData): boolean {
 }
 
 function notifyHintSessions(changed: boolean): void {
+  if (!changed) return;
   for (const session of [...hintSessions]) {
     try {
-      const rewrapped = session.ensure();
-      if (rewrapped) session.requestRender(true);
-      else if (changed) session.requestRender();
+      session.requestRender();
     } catch {
       hintSessions.delete(session);
     }
@@ -439,125 +414,59 @@ function startIdeSubscription(): void {
   });
 }
 
-type EditorLike = { render(width: number): string[] };
-
-const patchedEditors = new WeakSet<object>();
-
-/** 取字符串去掉 SGR 序列后的最后一个可见字符（圆角边框的 ╮ / 直边框的 ─） */
-function lastVisibleChar(s: string): string {
-  const plain = s.replace(SGR_RE, "");
-  return [...plain].at(-1) ?? "";
-}
-
-/**
- * 给编辑器实例的 render 打补丁：首行（上边框）右侧叠加暗色标签。
- * 不替换编辑器实例，避免破坏 pi-open-tui 等扩展的自定义编辑器；
- * 输入行为完全不变，标签纯展示。
- */
-function patchEditorRender<T extends EditorLike>(editor: T, getTheme: () => Theme | undefined): T {
-  if (patchedEditors.has(editor)) return editor;
-  patchedEditors.add(editor);
-  const origRender = editor.render.bind(editor);
-  editor.render = (width: number): string[] => {
-    const lines = origRender(width);
-    if (lines.length === 0 || width < HINT_MIN_WIDTH) return lines;
-    const parts = getHintParts();
-    const theme = getTheme();
-    if (!parts || !theme) return lines;
-    const maxLabel = Math.min(HINT_MAX_WIDTH, Math.max(8, width - HINT_MIN_BORDER));
-    const label = formatHintLabel(parts, maxLabel);
-    const text = ` ${label} `;
-    const labelWidth = visualWidth(text);
-    // 标签 + 右侧框角之外，至少保留 HINT_MIN_BORDER 列边框
-    if (labelWidth > width - HINT_MIN_BORDER) return lines;
-    const line = lines[0]!;
-    // 截掉右侧一段边框，插入标签，再补上带原边框色的行尾字符（╮/─），
-    // 使框角颜色与主题一致
-    const borderPrefix = SGR_PREFIX_RE.exec(line)?.[0] ?? "";
-    const patched =
-      truncateVisual(line, width - labelWidth - 1) +
-      theme.fg("dim", text) +
-      borderPrefix +
-      lastVisibleChar(line);
-    // 宁可丢掉标签，也不让这一行超出 width：pi-tui 会因换行错位把整页画残
-    if (visualWidth(patched) > width) return lines;
-    lines[0] = patched;
-    return lines;
-  };
-  return editor;
-}
-
-function registerWorkspaceHint(pi: ExtensionAPI): void {
+function registerEditorHintWidget(pi: ExtensionAPI): void {
   let hintState: HintState | undefined;
-  const delayTimers: ReturnType<typeof setTimeout>[] = [];
 
   const stopHintSession = () => {
-    for (const t of delayTimers) clearTimeout(t);
-    delayTimers.length = 0;
-    if (hintState) hintSessions.delete(hintState);
+    if (!hintState) return;
+    hintSessions.delete(hintState);
+    try {
+      hintState.clear();
+    } catch {
+      // 会话已替换时 ctx.ui 可能失效
+    }
     hintState = undefined;
   };
 
   pi.on("session_start", (_event, ctx) => {
     if (!ctx.hasUI) return;
     stopHintSession();
-    let tuiRef: { requestRender(force?: boolean): void } | undefined;
-    // 当前被包装的工厂（pi-open-tui 的圆角编辑器工厂，或 undefined 用默认编辑器兜底）
-    let innerFactory: ReturnType<typeof ctx.ui.getEditorComponent>;
-    const wrapperFactory: NonNullable<Parameters<typeof ctx.ui.setEditorComponent>[0]> = (
-      tui,
-      theme,
-      keybindings,
-    ) => {
-      tuiRef = tui;
-      const editor = innerFactory
-        ? innerFactory(tui, theme, keybindings)
-        : new CustomEditor(tui, theme, keybindings);
-      return patchEditorRender(editor, () => {
-        try {
-          return ctx.ui.theme;
-        } catch {
-          // 会话已替换时 TUI 仍可能重绘；跳过标签，避免 render 打崩进程
-          return undefined;
-        }
-      });
-    };
-    // 扩展是异步逐个加载的，pi-open-tui 可能在我们之后才注册它的工厂。
-    // 数据靠 subscribe_ide 推送；这里只在启动延迟和每次推送时重新包装。
-    const ensureWrapped = (): boolean => {
-      try {
-        const current = ctx.ui.getEditorComponent();
-        if (current === wrapperFactory) return false;
-        innerFactory = current;
-        ctx.ui.setEditorComponent(wrapperFactory);
-        return true;
-      } catch {
-        stopHintSession();
-        return false;
-      }
-    };
-    ensureWrapped();
+
+    let tuiRef: { requestRender(): void } | undefined;
+    ctx.ui.setWidget(
+      HINT_WIDGET_KEY,
+      (tui, _theme) => {
+        tuiRef = tui;
+        return {
+          render(width: number): string[] {
+            const parts = getHintParts();
+            if (!parts || width < HINT_MIN_WIDTH) return [];
+            let theme;
+            try {
+              theme = ctx.ui.theme;
+            } catch {
+              return [];
+            }
+            const label = formatHintLabel(parts, width);
+            const labelWidth = visualWidth(label);
+            // 超宽会让 pi-tui 换行错位，宁可空一行
+            if (labelWidth > width) return [];
+            const pad = width - labelWidth;
+            return [theme.fg("accent", `${" ".repeat(pad)}${label}`)];
+          },
+          invalidate() {},
+        };
+      },
+      { placement: "aboveEditor" },
+    );
+
     hintState = {
-      ensure: ensureWrapped,
-      requestRender: (force?: boolean) => tuiRef?.requestRender(force),
+      requestRender: () => tuiRef?.requestRender(),
+      clear: () => ctx.ui.setWidget(HINT_WIDGET_KEY, undefined),
     };
     hintSessions.add(hintState);
-    if (hintCache.parts) hintState.requestRender();
-    // pi-open-tui 会在 session_start 里清屏（\x1b[2J），TUI 不知情仍做差分刷新，
-    // 欢迎页/边框留在 previousLines 里以为没变，屏幕就空了。拖动分割条会走
-    // requestRender(true) → resetRenderState → 全量重绘才恢复。
-    // 普通 requestRender() 不够；启动后强制全量重绘几次，并顺带重新包装工厂。
-    for (const ms of [50, 250, 800, 2000]) {
-      const t = setTimeout(() => {
-        hintState?.ensure();
-        hintState?.requestRender(true);
-      }, ms);
-      t.unref?.();
-      delayTimers.push(t);
-    }
   });
 
-  // 会话 ctx 会在 /reload、/new、/resume、/fork 时失效
   pi.on("session_shutdown", () => {
     stopHintSession();
   });
