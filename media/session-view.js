@@ -48,9 +48,9 @@
       .trim()
       .toLowerCase();
     if (!needle) return true;
-    return String((session && session.title) || "")
-      .toLowerCase()
-      .includes(needle);
+    const title = String((session && session.title) || "").toLowerCase();
+    const rootName = String((session && session.rootName) || "").toLowerCase();
+    return title.includes(needle) || rootName.includes(needle);
   }
 
   function sessionActionAvailable(session) {

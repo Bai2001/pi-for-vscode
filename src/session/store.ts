@@ -9,6 +9,7 @@ export interface PiSession {
   id: string;
   path: string;
   title: string;
+  cwd: string;
   createdAtMs: number;
   mtimeMs: number;
 }
@@ -27,7 +28,6 @@ interface SessionHeader {
 }
 
 interface CachedSession extends PiSession {
-  cwd: string;
   size: number;
 }
 
@@ -40,16 +40,25 @@ export function encodeWorkspaceDirectory(cwd: string): string {
 }
 
 export async function listWorkspaceSessions(
-  cwd: string,
+  cwd: string | readonly string[],
   options: SessionSearchOptions = {},
+): Promise<PiSession[]> {
+  const cwds = typeof cwd === "string" ? [cwd] : cwd;
+  const matches = await Promise.all(cwds.map((folder) => listSessionsForCwd(folder, options)));
+  const unique = new Map<string, PiSession>();
+  for (const session of matches.flat()) unique.set(session.path, session);
+  return [...unique.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+async function listSessionsForCwd(
+  cwd: string,
+  options: SessionSearchOptions,
 ): Promise<PiSession[]> {
   const search = await sessionSearch(cwd, options);
   const matches = await Promise.all(
     search.directories.map((directory) => readSessions(directory, search.cwd)),
   );
-  const unique = new Map<string, PiSession>();
-  for (const session of matches.flat()) unique.set(session.path, session);
-  return [...unique.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return matches.flat();
 }
 
 /** A session persists as its JSONL transcript plus a sidecar directory of the same name. */

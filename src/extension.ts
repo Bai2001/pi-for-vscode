@@ -171,13 +171,14 @@ function writeWorkspaceInfo(): void {
 // language-config.json 只作调试落盘。
 //
 // 关键：语言段覆盖（如 "[python]": {...}、"[vue]": {...}）只在传入 languageId
-// 时生效；folder 级配置需要传入 resource（用第一个工作区根目录作代表）。
+// 时生效；folder 级配置需要传入 resource（每个工作区根各自采集一份）。
 // ---------------------------------------------------------------------------
 
-interface LanguageConfigSnapshot {
-  updatedAt: number;
-  /** 第一个工作区根目录绝对路径（作 resource 用途；无工作区时为 null） */
-  resource: string | null;
+interface LanguageConfigRoot {
+  /** 该工作区根绝对路径（作 resource 用途） */
+  resource: string;
+  /** 工作区根显示名 */
+  name: string;
   typescript: {
     /** 编辑器用的 TypeScript SDK 路径（typescript.tsdk） */
     tsdk: string | null;
@@ -192,13 +193,13 @@ interface LanguageConfigSnapshot {
   };
 }
 
-function firstWorkspaceResource(): vscode.Uri | undefined {
-  return vscode.workspace.workspaceFolders?.[0]?.uri;
+interface LanguageConfigSnapshot {
+  updatedAt: number;
+  roots: LanguageConfigRoot[];
 }
 
-/** 采集语言配置快照（与编辑器一致的最终值） */
-function collectLanguageConfig(): LanguageConfigSnapshot {
-  const resource = firstWorkspaceResource();
+function collectRootLanguageConfig(folder: vscode.WorkspaceFolder): LanguageConfigRoot {
+  const resource = folder.uri;
 
   // TypeScript：tsdk（编辑器用哪个 TypeScript 版本，CLI 就用同一个）
   // TypeScript 无语言段覆盖，直接用 resource 定位 folder/workspace 层配置
@@ -206,21 +207,27 @@ function collectLanguageConfig(): LanguageConfigSnapshot {
   const tsdk = tsConfig.get<string>("tsdk") ?? null;
 
   // basedpyright：typeCheckingMode 是它自己的字段；解释器走 python 扩展
-  const pyScope = resource !== undefined ? { uri: resource, languageId: "python" } : undefined;
+  const pyScope = { uri: resource, languageId: "python" };
   const bpConfig = vscode.workspace.getConfiguration("basedpyright.analysis", pyScope);
   const pythonConfig = vscode.workspace.getConfiguration("python", pyScope);
 
   return {
-    updatedAt: Date.now(),
-    resource: resource?.fsPath ?? null,
-    typescript: {
-      tsdk,
-    },
+    resource: resource.fsPath,
+    name: folder.name,
+    typescript: { tsdk },
     basedpyright: {
       typeCheckingMode: bpConfig.get<string>("typeCheckingMode") ?? null,
       interpreterPath: pythonConfig.get<string>("defaultInterpreterPath") ?? null,
       venvPath: pythonConfig.get<string>("venvPath") ?? null,
     },
+  };
+}
+
+/** 采集语言配置快照（每个工作区根一份，与该根编辑器设置一致） */
+function collectLanguageConfig(): LanguageConfigSnapshot {
+  return {
+    updatedAt: Date.now(),
+    roots: (vscode.workspace.workspaceFolders ?? []).map(collectRootLanguageConfig),
   };
 }
 
@@ -372,8 +379,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.onDidChangeTextEditorSelection(() => writeContext()),
     // 诊断变化时刷新诊断文件
     vscode.languages.onDidChangeDiagnostics(() => writeDiagnostics()),
-    // 根目录增删时刷新工作区结构
-    vscode.workspace.onDidChangeWorkspaceFolders(() => writeWorkspaceInfo()),
+    // 根目录增删时刷新工作区结构与按根语言配置
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      writeWorkspaceInfo();
+      writeLanguageConfig();
+    }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("pi-for-vscode")) {
         readConfig();

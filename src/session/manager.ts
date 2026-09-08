@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import type { IPty } from "node-pty";
 import * as vscode from "vscode";
 import { PiPseudoterminal } from "../terminal/native-terminal.js";
@@ -42,6 +42,7 @@ import {
 } from "./store.js";
 import { TerminalReplay } from "../terminal/replay.js";
 import { normalizeViewState, setArchived, type PiViewState } from "./view-state.js";
+import { coerceWorkspaceCwd, rootNameForCwd, type WorkspaceRoot } from "./workspace.js";
 
 const require = createRequire(import.meta.url);
 let ptyModule: typeof import("node-pty") | undefined;
@@ -56,6 +57,7 @@ interface RunningSession {
   sessionId: string;
   startedAtMs: number;
   title: string;
+  cwd: string;
   path?: string;
   leafId?: string;
   /** True only while this session is bound to the shared Terminal Editor. */
@@ -73,6 +75,8 @@ interface StartSessionOptions {
   noFocus?: boolean;
   /** 不创建 Terminal Editor 画面（后台会话） */
   noPresentation?: boolean;
+  /** 会话所属工作区根；缺省则用侧栏当前选中的新建目标根 */
+  cwd?: string;
 }
 
 type SessionHistoryAction = "fork" | "rewind";
@@ -83,6 +87,7 @@ type ClientMessage =
   | { type: "customize" }
   | { type: "refresh" }
   | { type: "resume"; id: string }
+  | { type: "set-new-session-cwd"; path: string }
   | { type: "detach"; id: string }
   | { type: "shutdown"; id: string }
   | { type: "delete"; id: string }
@@ -130,26 +135,39 @@ function currentWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   return vscode.workspace.workspaceFolders?.find((folder) => Boolean(folder.uri.fsPath));
 }
 
+function workspaceRoots(): WorkspaceRoot[] {
+  return (vscode.workspace.workspaceFolders ?? [])
+    .filter((folder) => Boolean(folder.uri.fsPath))
+    .map((folder) => ({ name: folder.name, path: folder.uri.fsPath }));
+}
+
 export class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
   private manager: PiSessionManager | undefined;
-  private cwd: string | undefined;
   private disposed = false;
+  private readonly disposables: vscode.Disposable[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly memento: vscode.Memento,
     private readonly getIpcEnv: () => Record<string, string>,
-  ) {}
+  ) {
+    this.disposables.push(
+      vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        if (this.disposed) return;
+        const existed = Boolean(this.manager);
+        this.createManager();
+        if (!existed && this.view) this.manager?.attachView(this.view);
+      }),
+    );
+  }
 
   async open(): Promise<void> {
-    const folder = currentWorkspaceFolder();
-    if (!folder) {
+    if (workspaceRoots().length === 0) {
       await vscode.window.showErrorMessage("请先打开一个工作区文件夹。");
       return;
     }
 
-    this.cwd = folder.uri.fsPath;
     await vscode.commands.executeCommand(PI_CONTAINER_COMMAND);
     this.view?.show();
     this.createManager();
@@ -179,19 +197,18 @@ export class PiViewProvider implements vscode.WebviewViewProvider, vscode.Dispos
     this.manager?.dispose();
     this.manager = undefined;
     this.view = undefined;
+    for (const disposable of this.disposables) disposable.dispose();
   }
 
   private createManager(): void {
     if (this.disposed || this.manager) return;
-    const cwd = this.cwd ?? currentWorkspaceFolder()?.uri.fsPath;
-    if (!cwd) {
+    if (workspaceRoots().length === 0) {
       if (this.view)
         this.view.webview.html = "<!doctype html><body>请先打开一个工作区文件夹。</body>";
       return;
     }
 
-    this.cwd = cwd;
-    this.manager = new PiSessionManager(this.extensionUri, cwd, this.memento, this.getIpcEnv);
+    this.manager = new PiSessionManager(this.extensionUri, this.memento, this.getIpcEnv);
   }
 }
 
@@ -225,15 +242,16 @@ class PiSessionManager implements vscode.Disposable {
   private view: vscode.WebviewView | undefined;
   private viewReady = false;
   private disposed = false;
+  private newSessionCwd: string | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly cwd: string,
     private readonly memento: vscode.Memento,
     private readonly getIpcEnv: () => Record<string, string>,
   ) {
     this.viewState = normalizeViewState(this.memento.get(PI_VIEW_STATE_KEY));
     this.statusBridge = new PiStatusBridge((report) => this.handleStatusReport(report));
+    this.newSessionCwd = coerceWorkspaceCwd(workspaceRoots(), currentWorkspaceFolder()?.uri.fsPath);
     vscode.workspace.onDidChangeConfiguration(
       (event) => {
         if (event.affectsConfiguration(`${CONFIG_SECTION}.terminal.closeBehavior`))
@@ -255,6 +273,25 @@ class PiSessionManager implements vscode.Disposable {
           }
         }
         this.postActiveSession(session?.tabId);
+      },
+      undefined,
+      this.disposables,
+    );
+    vscode.window.onDidChangeActiveTextEditor(
+      (editor) => {
+        if (!editor || editor.document.uri.scheme !== "file") return;
+        const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+        if (!folder?.uri.fsPath) return;
+        this.setNewSessionCwd(folder.uri.fsPath);
+      },
+      undefined,
+      this.disposables,
+    );
+    vscode.workspace.onDidChangeWorkspaceFolders(
+      () => {
+        this.newSessionCwd = coerceWorkspaceCwd(workspaceRoots(), this.newSessionCwd);
+        this.postWorkspaceFolders();
+        void this.refreshHistory();
       },
       undefined,
       this.disposables,
@@ -324,6 +361,7 @@ class PiSessionManager implements vscode.Disposable {
       case "ready":
         this.viewReady = true;
         this.postHistory();
+        this.postWorkspaceFolders();
         this.postCloseBehavior();
         this.postActiveSession(this.activeSession()?.tabId);
         break;
@@ -357,6 +395,9 @@ class PiSessionManager implements vscode.Disposable {
       case "resume":
         this.resumeSession(message.id);
         break;
+      case "set-new-session-cwd":
+        this.setNewSessionCwd(message.path);
+        break;
     }
   }
 
@@ -377,6 +418,7 @@ class PiSessionManager implements vscode.Disposable {
     const visible = restored.find((record) => record.id === focused) ?? restored[0];
     for (const record of restored) {
       this.startSession(record.id, record.path, {
+        cwd: record.cwd ?? this.history.get(record.id)?.cwd,
         noFocus: true,
         noPresentation: record.id !== visible.id,
       });
@@ -394,7 +436,7 @@ class PiSessionManager implements vscode.Disposable {
       return;
     }
     const session = this.history.get(id);
-    if (session) this.startSession(id, session.path);
+    if (session) this.startSession(id, session.path, { cwd: session.cwd });
   }
 
   /** Closing a tab leaves Pi running; the session can be reopened from the list. */
@@ -516,6 +558,7 @@ class PiSessionManager implements vscode.Disposable {
       if (forked.draft) draftFile = await createNativeDraftFile(forked.draft);
       await this.refreshHistory();
       const failure = this.startSession(forked.id, forked.path, {
+        cwd: source.cwd,
         nativeDraftFile: draftFile,
         reportError: false,
       });
@@ -539,7 +582,7 @@ class PiSessionManager implements vscode.Disposable {
     );
     const snapshot = await resolveSessionSnapshot(source.path, entryId);
     let revertCode = false;
-    if (snapshot && (await worktreeDiffersFromSnapshot(this.cwd, snapshot))) {
+    if (snapshot && (await worktreeDiffersFromSnapshot(source.cwd, snapshot))) {
       const choice = await vscode.window.showWarningMessage(
         "要从更早的消息重新提交吗？",
         {
@@ -568,11 +611,12 @@ class PiSessionManager implements vscode.Disposable {
         await this.stopSessionForReplacement(source.open);
         stopped = true;
       }
-      if (revertCode && snapshot) await restoreWorktreeSnapshot(this.cwd, snapshot);
+      if (revertCode && snapshot) await restoreWorktreeSnapshot(source.cwd, snapshot);
       await rewriteSessionFile(source.path, prepared.contents);
       rewritten = true;
       await this.refreshHistory();
       const failure = this.startSession(tabId, source.path, {
+        cwd: source.cwd,
         nativeDraftFile: draftFile,
         reportError: false,
       });
@@ -582,7 +626,7 @@ class PiSessionManager implements vscode.Disposable {
       if (rewritten) await rewriteSessionFile(source.path, originalContents).catch(() => undefined);
       const current = this.sessions.get(tabId);
       if (stopped && (!current || current.process === source.open?.process)) {
-        this.startSession(tabId, source.path, { reportError: false });
+        this.startSession(tabId, source.path, { cwd: source.cwd, reportError: false });
       } else if (!stopped && current?.process === source.open?.process) {
         this.sessionStates.set(sessionId, "idle");
         this.postHistory();
@@ -595,13 +639,16 @@ class PiSessionManager implements vscode.Disposable {
   private sessionActionSource(sessionId: string): {
     path: string;
     title: string;
+    cwd: string;
     open: RunningSession | undefined;
   } {
     const open = this.openSessionFor(sessionId);
     const saved = this.history.get(sessionId);
     const path = saved?.path ?? open?.path;
+    const cwd = saved?.cwd ?? open?.cwd;
     if (!path) throw new Error("请先发送一条消息再使用此操作。");
-    return { path, title: saved?.title ?? open?.title ?? NEW_SESSION_TITLE, open };
+    if (!cwd) throw new Error("无法确定该会话的工作区根目录。");
+    return { path, title: saved?.title ?? open?.title ?? NEW_SESSION_TITLE, cwd, open };
   }
 
   private assertSessionActionAvailable(open: RunningSession | undefined): void {
@@ -653,9 +700,11 @@ class PiSessionManager implements vscode.Disposable {
     if (this.disposed) return;
     const openSessions = [...this.sessions.values()]
       .filter((session) => session.attached)
-      .map((session) =>
-        session.path ? { id: session.sessionId, path: session.path } : { id: session.sessionId },
-      );
+      .map((session) => ({
+        id: session.sessionId,
+        cwd: session.cwd,
+        ...(session.path ? { path: session.path } : {}),
+      }));
     this.viewState = normalizeViewState({ ...this.viewState, openSessions });
     void this.memento.update(PI_VIEW_STATE_KEY, this.viewState);
   }
@@ -676,6 +725,13 @@ class PiSessionManager implements vscode.Disposable {
       .trim();
     if (!command) {
       const failure = "请在设置里指定 pi-for-vscode.command 为 pi 可执行文件。";
+      if (options.reportError !== false) void vscode.window.showErrorMessage(failure);
+      return failure;
+    }
+
+    const cwd = options.cwd ?? coerceWorkspaceCwd(workspaceRoots(), this.newSessionCwd);
+    if (!cwd) {
+      const failure = "请先打开一个工作区文件夹。";
       if (options.reportError !== false) void vscode.window.showErrorMessage(failure);
       return failure;
     }
@@ -702,7 +758,7 @@ class PiSessionManager implements vscode.Disposable {
       );
       replay = new TerminalReplay(cols, rows, scrollback);
       const child = getPty().spawn(spawn.file, spawn.args, {
-        cwd: this.cwd,
+        cwd,
         name: "xterm-256color",
         cols,
         rows,
@@ -720,6 +776,7 @@ class PiSessionManager implements vscode.Disposable {
         sessionId: id,
         startedAtMs: Date.now(),
         title,
+        cwd,
         path: sessionPath,
         attached: options.noPresentation !== true,
         process: child,
@@ -1052,7 +1109,7 @@ class PiSessionManager implements vscode.Disposable {
         void this.recoverStart(
           session.sessionId,
           session.path,
-          {},
+          { cwd: session.cwd },
           `pi 已退出，退出码 ${exitCode}`,
         );
       } else {
@@ -1063,7 +1120,7 @@ class PiSessionManager implements vscode.Disposable {
   }
 
   private async refreshHistory(): Promise<void> {
-    const sessions = await listWorkspaceSessions(this.cwd);
+    const sessions = await listWorkspaceSessions(workspaceRoots().map((folder) => folder.path));
     if (this.disposed) return;
     this.history.clear();
     for (const session of sessions) this.history.set(session.id, session);
@@ -1125,7 +1182,12 @@ class PiSessionManager implements vscode.Disposable {
     if (this.disposed || this.historyWatchSyncing) return;
     this.historyWatchSyncing = true;
     try {
-      const directories = new Set(await sessionDirectoriesForWorkspace(this.cwd));
+      const directories = new Set<string>();
+      for (const folder of workspaceRoots()) {
+        for (const directory of await sessionDirectoriesForWorkspace(folder.path)) {
+          directories.add(directory);
+        }
+      }
       if (this.disposed) return;
       for (const [directory, watcher] of this.historyWatchers) {
         if (directories.has(directory)) continue;
@@ -1154,17 +1216,20 @@ class PiSessionManager implements vscode.Disposable {
 
   private postHistory(): void {
     const archived = new Set(this.viewState.archivedSessionIds);
-    const sessions = [...this.history.values()].map(({ id, title, createdAtMs, mtimeMs }) => {
-      const openSession = this.openSessionFor(id);
+    const folders = workspaceRoots();
+    const sessions = [...this.history.values()].map((saved) => {
+      const openSession = this.openSessionFor(saved.id);
+      const cwd = openSession?.cwd ?? saved.cwd;
       return {
-        id,
-        title,
-        createdAtMs,
-        updatedAtMs: mtimeMs,
-        archived: archived.has(id),
+        id: saved.id,
+        title: saved.title,
+        createdAtMs: saved.createdAtMs,
+        updatedAtMs: saved.mtimeMs,
+        archived: archived.has(saved.id),
         tabId: openSession?.tabId,
         attached: openSession?.attached === true,
-        state: this.sessionStates.get(id) ?? (openSession ? "starting" : "inactive"),
+        state: this.sessionStates.get(saved.id) ?? (openSession ? "starting" : "inactive"),
+        rootName: rootNameForCwd(folders, cwd),
       };
     });
     for (const session of this.sessions.values()) {
@@ -1178,6 +1243,7 @@ class PiSessionManager implements vscode.Disposable {
         tabId: session.tabId,
         attached: session.attached,
         state: this.sessionStates.get(session.sessionId) ?? "starting",
+        rootName: rootNameForCwd(folders, session.cwd),
       });
     }
     sessions.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
@@ -1216,6 +1282,26 @@ class PiSessionManager implements vscode.Disposable {
 
   private postActiveSession(tabId: string | undefined): void {
     this.post({ type: "active-session", ...(tabId ? { tabId } : {}) });
+  }
+
+  private setNewSessionCwd(path: string): void {
+    const next = coerceWorkspaceCwd(workspaceRoots(), path);
+    if (!next || next === this.newSessionCwd) {
+      if (next) this.postWorkspaceFolders();
+      return;
+    }
+    this.newSessionCwd = next;
+    this.postWorkspaceFolders();
+  }
+
+  private postWorkspaceFolders(): void {
+    const folders = workspaceRoots();
+    this.newSessionCwd = coerceWorkspaceCwd(folders, this.newSessionCwd);
+    this.post({
+      type: "workspace-folders",
+      folders,
+      selected: this.newSessionCwd,
+    });
   }
 }
 
@@ -1349,6 +1435,7 @@ function isClientMessage(value: unknown): value is ClientMessage {
   if (message.type === "detach" || message.type === "shutdown" || message.type === "delete") {
     return typeof message.id === "string";
   }
+  if (message.type === "set-new-session-cwd") return nonEmptyBoundedString(message.path, 4096);
   return message.type === "resume" && typeof message.id === "string";
 }
 
@@ -1385,9 +1472,12 @@ function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
 				<input id="search" type="text" placeholder="搜索会话…" aria-label="搜索会话" autocomplete="off" spellcheck="false">
 			</div>
 			<nav id="sidebar-actions" aria-label="会话操作">
-				<button id="new-session" class="sidebar-action" type="button">
-					<span class="action-label">新建会话</span>
-				</button>
+				<div class="new-session-row">
+					<button id="new-session" class="sidebar-action" type="button">
+						<span class="action-label">新建会话</span>
+					</button>
+					<select id="new-session-root" hidden aria-label="新建会话的工作区根目录"></select>
+				</div>
 			</nav>
 			<div id="session-list"></div>
 		</main>

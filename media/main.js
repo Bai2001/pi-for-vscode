@@ -4,6 +4,7 @@
   const search = document.getElementById("search");
   const refresh = document.getElementById("refresh");
   const newSession = document.getElementById("new-session");
+  const newSessionRoot = document.getElementById("new-session-root");
   const customize = document.getElementById("customize");
   const menu = document.getElementById("menu");
   const messageDialog = document.getElementById("message-dialog");
@@ -238,6 +239,7 @@
           session.id,
           normalizedState(session.state),
           session.title,
+          session.rootName || "",
           Boolean(session.archived),
           Boolean(session.attached),
           String(session.tabId),
@@ -321,14 +323,24 @@
     const open = document.createElement("button");
     open.type = "button";
     open.className = "session-open";
-    open.title = `${statusLabels[state]} — ${session.title} (${age})`;
-    open.setAttribute("aria-label", `${statusLabels[state]}: ${session.title}, ${age}`);
+    const rootSuffix = session.rootName ? ` · ${session.rootName}` : "";
+    open.title = `${statusLabels[state]} — ${session.title}${rootSuffix} (${age})`;
+    open.setAttribute(
+      "aria-label",
+      `${statusLabels[state]}: ${session.title}${rootSuffix}, ${age}`,
+    );
     open.setAttribute("aria-pressed", String(selected));
     const status = icon(statusIcons[state], `session-status ${state}`);
     const label = document.createElement("span");
     label.className = "session-label";
     label.textContent = session.title;
     open.append(status, label);
+    if (session.rootName) {
+      const root = document.createElement("span");
+      root.className = "session-root";
+      root.textContent = session.rootName;
+      open.append(root);
+    }
     open.addEventListener("click", () => vscode.postMessage({ type: "resume", id: session.id }));
 
     const actions = document.createElement("div");
@@ -438,10 +450,33 @@
       case "close-behavior":
         closeBehaviorStop = message.stop === true;
         break;
+      case "workspace-folders":
+        renderWorkspaceFolders(message.folders, message.selected);
+        break;
     }
   });
 
+  function renderWorkspaceFolders(folders, selected) {
+    if (!newSessionRoot) return;
+    const roots = Array.isArray(folders) ? folders : [];
+    const multi = roots.length > 1;
+    newSessionRoot.hidden = !multi;
+    newSessionRoot.replaceChildren();
+    if (!multi) return;
+    for (const folder of roots) {
+      const option = document.createElement("option");
+      option.value = folder.path;
+      option.textContent = folder.name;
+      newSessionRoot.append(option);
+    }
+    const paths = new Set(roots.map((folder) => folder.path));
+    newSessionRoot.value = paths.has(selected) ? selected : roots[0].path;
+  }
+
   newSession?.addEventListener("click", () => vscode.postMessage({ type: "new" }));
+  newSessionRoot?.addEventListener("change", () => {
+    vscode.postMessage({ type: "set-new-session-cwd", path: newSessionRoot.value });
+  });
   customize?.addEventListener("click", () => vscode.postMessage({ type: "customize" }));
   refresh?.addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
   refresh?.append(icon("refresh"));

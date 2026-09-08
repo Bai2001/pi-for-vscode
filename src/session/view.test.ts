@@ -8,6 +8,7 @@ interface SessionSummary {
   createdAtMs: number;
   updatedAtMs?: number;
   archived?: boolean;
+  rootName?: string;
 }
 
 interface SessionView {
@@ -110,6 +111,18 @@ test("filters sessions by title, ignoring case and surrounding space", () => {
     "b",
   ]);
   assert.deepEqual(sessionView.groupSessions(sessions, { nowMs: now, query: "missing" }), []);
+});
+
+test("filters sessions by workspace root name", () => {
+  const now = new Date(2026, 7, 2, 12).getTime();
+  const sessions = [
+    { ...session("a", now - HOUR, "fix login"), rootName: "frontend" },
+    { ...session("b", now - 2 * HOUR, "fix login"), rootName: "backend" },
+  ];
+
+  assert.deepEqual(flatIds(sessionView.groupSessions(sessions, { nowMs: now, query: "front" })), [
+    "a",
+  ]);
 });
 
 test("enables Fork and Rewind only after a session stops working", () => {

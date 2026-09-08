@@ -4,6 +4,7 @@ export const MAX_ARCHIVED_SESSIONS = 500;
 export interface OpenSessionRecord {
   id: string;
   path?: string;
+  cwd?: string;
 }
 
 export interface PiViewState {
@@ -34,7 +35,12 @@ export function normalizeViewState(value: unknown): PiViewState {
     if (!id || seen.has(id) || archived.has(id)) continue;
     seen.add(id);
     const path = nonEmptyString(open.path);
-    openSessions.push(path ? { id, path } : { id });
+    const cwd = nonEmptyString(open.cwd);
+    openSessions.push({
+      id,
+      ...(path ? { path } : {}),
+      ...(cwd ? { cwd } : {}),
+    });
     if (openSessions.length >= MAX_RESTORED_SESSIONS) break;
   }
 

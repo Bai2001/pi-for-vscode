@@ -210,6 +210,42 @@ test("deleting a session removes its transcript and sidecar directory only", asy
   assert.equal(existsSync(sessionsDir), true);
 });
 
+test("exposes each session's cwd and merges sessions from multiple workspace roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+
+  const frontend = join(root, "frontend");
+  const backend = join(root, "backend");
+  const agentDir = join(root, "agent");
+  const frontendDir = join(agentDir, "sessions", encodeWorkspaceDirectory(frontend));
+  const backendDir = join(agentDir, "sessions", encodeWorkspaceDirectory(backend));
+  await mkdir(frontendDir, { recursive: true });
+  await mkdir(backendDir, { recursive: true });
+
+  const older = join(frontendDir, "front.jsonl");
+  const newer = join(backendDir, "back.jsonl");
+  await writeFile(older, sessionHeader("front", frontend));
+  await writeFile(newer, sessionHeader("back", backend));
+  const now = Date.now() / 1000;
+  await utimes(older, now - 2, now - 2);
+  await utimes(newer, now, now);
+
+  const single = await listWorkspaceSessions(frontend, { agentDir, env: {} });
+  assert.deepEqual(
+    single.map((session) => ({ id: session.id, cwd: session.cwd })),
+    [{ id: "front", cwd: frontend }],
+  );
+
+  const merged = await listWorkspaceSessions([frontend, backend], { agentDir, env: {} });
+  assert.deepEqual(
+    merged.map((session) => ({ id: session.id, cwd: session.cwd })),
+    [
+      { id: "back", cwd: backend },
+      { id: "front", cwd: frontend },
+    ],
+  );
+});
+
 function sessionHeader(id: string, cwd: string, timestamp?: string): string {
   return `${JSON.stringify({ type: "session", version: 3, id, timestamp, cwd })}\n`;
 }

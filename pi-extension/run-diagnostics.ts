@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { pickLanguageConfigForCwd, type LanguageConfigSnapshot } from "./language-config";
 import { callIpcData } from "./vscode-ipc";
 
 interface CliDiagnostic {
@@ -45,10 +46,8 @@ interface VscodeDiagnostic {
   source?: string;
 }
 
-// 编辑器语言配置快照（由 VSCode 扩展用 getConfiguration 合并后写入），
-// 供本工具把「只在编辑器设置里配过的值」桥接给 CLI，保证 CLI 与编辑器一致。
+// 诊断当前 cwd 所属工作区根的编辑器语言配置（按根采集，经 named pipe 下发）。
 interface LanguageConfig {
-  updatedAt: number;
   resource: string | null;
   typescript: { tsdk: string | null };
   basedpyright: {
@@ -64,10 +63,16 @@ const CLI_TIMEOUT_MS = 180_000;
 const MAX_FILES = 50;
 
 // ============ 读取语言配置快照（named pipe）============
-async function fetchLanguageConfig(): Promise<LanguageConfig | undefined> {
+async function fetchLanguageConfig(cwd: string): Promise<LanguageConfig | undefined> {
   try {
-    const raw = await callIpcData<LanguageConfig>("get_language_config");
-    if (typeof raw?.updatedAt === "number") return raw;
+    const raw = await callIpcData<LanguageConfigSnapshot>("get_language_config");
+    const root = pickLanguageConfigForCwd(raw, cwd);
+    if (!root) return undefined;
+    return {
+      resource: root.resource,
+      typescript: root.typescript,
+      basedpyright: root.basedpyright,
+    };
   } catch {
     /* 扩展未运行或未注入 pipe */
   }
@@ -532,7 +537,7 @@ export default function (pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params) {
       const cwd = process.cwd();
-      const config = await fetchLanguageConfig();
+      const config = await fetchLanguageConfig(cwd);
 
       const files = resolveFiles(cwd, params.files);
       const language = inferLanguage(params.language, files);

@@ -32,6 +32,21 @@ test("keeps only usable open sessions and caps how many are restored", () => {
   assert.equal(state.openSessions.length, MAX_RESTORED_SESSIONS);
 });
 
+test("keeps a restored session cwd when it is a usable path", () => {
+  const state = normalizeViewState({
+    openSessions: [
+      { id: "a", path: "/tmp/a.jsonl", cwd: "/ws/backend" },
+      { id: "b", cwd: "  " },
+      { id: "c", cwd: 3 },
+    ],
+  });
+  assert.deepEqual(state.openSessions, [
+    { id: "a", path: "/tmp/a.jsonl", cwd: "/ws/backend" },
+    { id: "b" },
+    { id: "c" },
+  ]);
+});
+
 test("never restores an archived session and keeps focus only on a restored session", () => {
   const archivedFocus = normalizeViewState({
     openSessions: [{ id: "a" }, { id: "archived" }],
