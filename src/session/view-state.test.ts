@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { MAX_RESTORED_SESSIONS, normalizeViewState, setArchived } from "./view-state.ts";
 
 test("treats unusable persisted state as empty", () => {

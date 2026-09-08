@@ -6,6 +6,8 @@ node_modules/**
 !node_modules/node-pty/**
 !node_modules/@xterm/**
 vite.config.ts
+vitest.config.ts
+scripts/**
 tsconfig.json
 *.map
 .gitignore

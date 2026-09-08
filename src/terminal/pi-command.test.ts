@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { cmdCommandLine, cmdQuote, win32Spawn } from "./pi-command.ts";
 
 test("cmdQuote leaves plain args untouched", () => {

@@ -9,7 +9,7 @@ pi for VSCode —— 在编辑器区分屏打开 pi 终端并注入编辑器上�
   - `session/`：侧栏会话列表、存储/操作、状态桥、Terminal Editor 编排
   - `terminal/`：node-pty 伪终端、conpty 滚轮、回放、Windows 启动命令
   - `ide/`：编辑器快照与浏览器 named pipe IPC
-  - 测试与源码同目录（`*.test.ts`，`npm test` 扫 `src/**/*.test.ts`）
+  - 测试与源码同目录（`*.test.ts`，`npm test` / Vitest 扫 `src/**/*.test.ts`）
 - `pi-extension/`：pi 侧扩展（运行时在终端 pi 进程内由 jiti 直接加载，**无需构建**）：
   - `run-diagnostics.ts`：`run_diagnostics` CLI 诊断工具（vue-tsc / tsc / basedpyright + ruff）
   - `vscode-browser.ts`：VSCode 内置浏览器工具

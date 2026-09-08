@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { onTestFinished, test } from "vitest";
 import {
   deleteSessionFiles,
   encodeWorkspaceDirectory,
@@ -20,9 +20,9 @@ import {
   NEW_SESSION_TITLE,
 } from "./store.ts";
 
-test("lists only this workspace's sessions, newest first", async (t) => {
+test("lists only this workspace's sessions, newest first", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const agentDir = join(root, "agent");
@@ -49,9 +49,9 @@ test("lists only this workspace's sessions, newest first", async (t) => {
   assert.equal(sessions[0].createdAtMs, Date.parse(newCreatedAt));
 });
 
-test("uses the latest session_info name and notices appended updates", async (t) => {
+test("uses the latest session_info name and notices appended updates", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const agentDir = join(root, "agent");
@@ -75,9 +75,9 @@ test("uses the latest session_info name and notices appended updates", async (t)
   assert.equal(sessions[0]?.title, "Renamed");
 });
 
-test("uses the first user message when the session has no name, like /resume", async (t) => {
+test("uses the first user message when the session has no name, like /resume", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const agentDir = join(root, "agent");
@@ -94,9 +94,9 @@ test("uses the first user message when the session has no name, like /resume", a
   assert.equal(sessions[0]?.title, "f5运行之后大概率闪退");
 });
 
-test("prefers session_info name over the first user message", async (t) => {
+test("prefers session_info name over the first user message", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const agentDir = join(root, "agent");
@@ -113,9 +113,9 @@ test("prefers session_info name over the first user message", async (t) => {
   assert.equal(sessions[0]?.title, "Refactor auth");
 });
 
-test("falls back to the first user message after session_info clears the name", async (t) => {
+test("falls back to the first user message after session_info clears the name", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const agentDir = join(root, "agent");
@@ -133,9 +133,9 @@ test("falls back to the first user message after session_info clears the name", 
   assert.equal(sessions[0]?.title, "keep this title");
 });
 
-test("reads first user message from text content blocks and collapses control characters", async (t) => {
+test("reads first user message from text content blocks and collapses control characters", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const agentDir = join(root, "agent");
@@ -163,9 +163,9 @@ test("reads first user message from text content blocks and collapses control ch
   assert.equal(sessions[0]?.title, "line one line two tail");
 });
 
-test("finds sessions when the workspace is opened through a symlink", async (t) => {
+test("finds sessions when the workspace is opened through a symlink", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const workspaceLink = join(root, "project-link");
@@ -184,9 +184,9 @@ test("finds sessions when the workspace is opened through a symlink", async (t) 
   );
 });
 
-test("deleting a session removes its transcript and sidecar directory only", async (t) => {
+test("deleting a session removes its transcript and sidecar directory only", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
 
   const workspace = join(root, "project");
   const agentDir = join(root, "agent");

@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import { onTestFinished, test } from "vitest";
 import {
   createForkedSession,
   listSessionUserMessages,
@@ -13,8 +13,8 @@ import {
   worktreeDiffersFromSnapshot,
 } from "./actions.ts";
 
-test("lists user messages from the current branch", async (t) => {
-  const fixture = await sessionFixture(t);
+test("lists user messages from the current branch", async () => {
+  const fixture = await sessionFixture();
   assert.deepEqual(await listSessionUserMessages(fixture.path), [
     { id: "user-1", text: "First prompt" },
     { id: "user-2", text: "Second prompt" },
@@ -26,8 +26,8 @@ test("lists user messages from the current branch", async (t) => {
   ]);
 });
 
-test("forks before the selected message and leaves that message as a draft", async (t) => {
-  const fixture = await sessionFixture(t);
+test("forks before the selected message and leaves that message as a draft", async () => {
+  const fixture = await sessionFixture();
   const first = await createForkedSession(fixture.path, "user-2", "Source title");
   const second = await createForkedSession(fixture.path, "user-2", "Source title");
 
@@ -53,8 +53,8 @@ test("forks before the selected message and leaves that message as a draft", asy
   assert.equal(records.at(-1)?.name, "(1) Source title");
 });
 
-test("forks the whole session when no message is selected", async (t) => {
-  const fixture = await sessionFixture(t);
+test("forks the whole session when no message is selected", async () => {
+  const fixture = await sessionFixture();
   const forked = await createForkedSession(fixture.path, undefined, "Source title");
 
   assert.equal(forked.draft, "");
@@ -72,8 +72,8 @@ test("forks the whole session when no message is selected", async (t) => {
   assert.equal(records.at(-1)?.name, "(1) Source title");
 });
 
-test("prepares an in-place rewind with the same session id", async (t) => {
-  const fixture = await sessionFixture(t);
+test("prepares an in-place rewind with the same session id", async () => {
+  const fixture = await sessionFixture();
   const rewind = await prepareRewindSession(fixture.path, "user-2", "Source title");
   const records = rewind.contents
     .trim()
@@ -93,9 +93,9 @@ test("prepares an in-place rewind with the same session id", async (t) => {
   assert.equal(records.at(-1)?.name, "Source title");
 });
 
-test("resolves pi-rewind-hook and native checkpoints through session lineage", async (t) => {
+test("resolves pi-rewind-hook and native checkpoints through session lineage", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-actions-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
   const parent = join(root, "parent.jsonl");
   const child = join(root, "child.jsonl");
   const hookSnapshot = "1".repeat(40);
@@ -139,9 +139,9 @@ test("resolves pi-rewind-hook and native checkpoints through session lineage", a
   assert.equal(await resolveSessionSnapshot(child, "missing"), undefined);
 });
 
-test("detects and exactly restores worktree changes without changing the real index", async (t) => {
+test("detects and exactly restores worktree changes without changing the real index", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-git-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
   await git(root, ["init"]);
   await git(root, ["config", "core.autocrlf", "false"]);
   await git(root, ["config", "user.name", "Pi VS Code Test"]);
@@ -167,9 +167,9 @@ test("detects and exactly restores worktree changes without changing the real in
   assert.equal(await worktreeDiffersFromSnapshot(root, snapshot), false);
 });
 
-async function sessionFixture(t: test.TestContext): Promise<{ path: string }> {
+async function sessionFixture(): Promise<{ path: string }> {
   const root = await mkdtemp(join(tmpdir(), "pi-vscode-actions-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
   await mkdir(root, { recursive: true });
   const path = join(root, "source.jsonl");
   await writeFile(
