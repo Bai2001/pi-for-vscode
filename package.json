@@ -1,7 +1,7 @@
 {
   "name": "pi-for-vscode",
   "displayName": "pi for VSCode",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "在辅助侧栏管理 pi 会话，于编辑器区打开原生终端，并注入编辑器上下文（个人自用）",
   "categories": [
     "AI",
