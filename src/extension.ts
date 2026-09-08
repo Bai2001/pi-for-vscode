@@ -4,8 +4,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { maybePromptAutoApprove, startBrowserIpc, type BrowserIpcHandle } from "./browser-ipc.js";
-import { publishIdeSnapshot } from "./ide-store.js";
+import {
+  maybePromptAutoApprove,
+  startBrowserIpc,
+  type BrowserIpcHandle,
+} from "./ide/browser-ipc.js";
+import { publishIdeSnapshot } from "./ide/store.js";
+import { PI_VIEW_ID, PiViewProvider, scheduleCloseEmptyEditorGroups } from "./session/manager.js";
 import { syncPiExtensions } from "./sync-pi-extension.js";
 import { registerUpdateChecker } from "./update.js";
 
@@ -328,91 +333,40 @@ function writeRaw(payload: string): void {
     .catch(() => undefined);
 }
 
-/** 已打开的 pi 终端计数（用于编号命名，支持多会话并存） */
-let piTerminalCount = 0;
-
 function readConfig(): void {
   const cfg = vscode.workspace.getConfiguration("pi-for-vscode");
   contextEnabled = cfg.get<boolean>("context.enabled", true);
   maxLines = cfg.get<number>("context.maxLines", 200);
 }
 
-let extensionPath = "";
 let browserIpc: BrowserIpcHandle | undefined;
 
-/** 在 PATH 中探测 pi 可执行文件（Windows 优先 pi.exe/pi.cmd） */
-function findPiExecutable(): string | undefined {
-  const pathEnv = process.env.PATH ?? "";
-  const names = process.platform === "win32" ? ["pi.exe", "pi.cmd", "pi.bat"] : ["pi"];
-  for (const dir of pathEnv.split(path.delimiter)) {
-    if (!dir) continue;
-    for (const name of names) {
-      const full = path.join(dir, name);
-      try {
-        if (fs.existsSync(full)) return full;
-      } catch {
-        /* 忽略无权限目录 */
-      }
-    }
-  }
-  return undefined;
-}
-
-/** 每次点击新建一个 pi 终端（支持多个会话并存），pi 退出即终端关闭 */
-async function openPiTerminal(): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration("pi-for-vscode");
-  const splitRight = cfg.get<boolean>("terminal.splitRight", true);
-
-  const piPath = findPiExecutable();
-  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-
-  piTerminalCount += 1;
-  const name = piTerminalCount === 1 ? "pi" : `pi #${piTerminalCount}`;
-
-  // 直接在目标分屏创建。若先按 Editor 打开再 moveEditorToRightGroup，
-  // pi 会在旧列宽下完成首帧；分屏后 VSCode 不一定发 resize，TUI 按过宽的
-  // 上边框换行，整页看起来残缺，直到手动拖动分割条才恢复。
-  const location = splitRight
-    ? { viewColumn: vscode.ViewColumn.Beside }
-    : vscode.TerminalLocation.Editor;
-
-  const env = browserIpc?.env;
-  const terminal = piPath
-    ? // pi 进程直接作为终端 shell：pi 一退出，终端随之关闭
-      vscode.window.createTerminal({
-        name,
-        location,
-        shellPath: piPath,
-        cwd,
-        env,
-        iconPath: {
-          light: vscode.Uri.file(path.join(extensionPath, "media", "pi.svg")),
-          dark: vscode.Uri.file(path.join(extensionPath, "media", "pi-dark.svg")),
-        },
-      })
-    : // 找不到 pi 可执行文件时回退：普通终端里跑 pi（pi 退出后回到 shell）
-      vscode.window.createTerminal({
-        name,
-        location,
-        cwd,
-        env,
-      });
-  terminal.show();
-  if (!piPath) {
-    terminal.sendText("pi", true);
-  }
-}
-
 export function activate(context: vscode.ExtensionContext): void {
-  extensionPath = context.extensionPath;
   readConfig();
 
   browserIpc = startBrowserIpc();
   context.subscriptions.push({ dispose: () => browserIpc?.dispose() });
   void maybePromptAutoApprove(context);
 
+  const sessionView = new PiViewProvider(
+    context.extensionUri,
+    context.workspaceState,
+    () => browserIpc?.env ?? {},
+  );
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-for-vscode.openTerminal", () => void openPiTerminal()),
+    scheduleCloseEmptyEditorGroups(),
+    sessionView,
+    vscode.window.registerWebviewViewProvider(PI_VIEW_ID, sessionView, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("pi-for-vscode.openTerminal", () => void sessionView.open()),
+    vscode.commands.registerCommand(
+      "pi-for-vscode.newSession",
+      () => void sessionView.newSession(),
+    ),
     // 编辑器/选区变化时刷新上下文
     vscode.window.onDidChangeActiveTextEditor(() => writeContext()),
     vscode.window.onDidChangeTextEditorSelection(() => writeContext()),

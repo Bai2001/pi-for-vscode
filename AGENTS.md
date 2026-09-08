@@ -4,7 +4,12 @@ pi for VSCode —— 在编辑器区分屏打开 pi 终端并注入编辑器上�
 
 ## 项目结构
 
-- `src/extension.ts`：VSCode 扩展主入口（ esbuild 打包到 `dist/`）
+- `src/`：VSCode 扩展宿主（Vite 打成 `dist/extension.cjs`，`src/` 不进 vsix）
+  - `extension.ts`：激活入口；`update.ts` / `sync-pi-extension.ts` 为宿主级辅助
+  - `session/`：侧栏会话列表、存储/操作、状态桥、Terminal Editor 编排
+  - `terminal/`：node-pty 伪终端、conpty 滚轮、回放、Windows 启动命令
+  - `ide/`：编辑器快照与浏览器 named pipe IPC
+  - 测试与源码同目录（`*.test.ts`，`npm test` 扫 `src/**/*.test.ts`）
 - `pi-extension/`：pi 侧扩展（运行时在终端 pi 进程内由 jiti 直接加载，**无需构建**）：
   - `run-diagnostics.ts`：`run_diagnostics` CLI 诊断工具（vue-tsc / tsc / basedpyright + ruff）
   - `vscode-browser.ts`：VSCode 内置浏览器工具
@@ -12,6 +17,11 @@ pi for VSCode —— 在编辑器区分屏打开 pi 终端并注入编辑器上�
   - `vscode-diagnostics.ts`：诊断桥接
   - `vscode-ipc.ts`：named pipe 共享客户端（会被同步到 `~/.pi/agent/extensions/`，必须导出空工厂，否则 pi 会当扩展加载并启动失败）
 - `pi-extension/tsconfig.json`：仅供编辑器类型检查；`paths` 内 SDK 路径带版本哈希，pi 大版本升级后需同步更新
+- `media/`：侧栏 webview（`main.css` / `main.js` / `session-view.js`）与图标
+- `resources/pi-vscode-status.ts`：注入 pi 进程的状态上报脚本（需打进 vsix，因此不放 `src/`）
+- `dist/`：构建产物（gitignore）
+- `.github/workflows/release.yml`：推送 `v*` tag 后打包并发布 VSIX
+- `docs/`：早期 GUI 方案草稿（React 面板），与当前「原生终端 + 会话列表」实现不一致，**不要按该文档改代码**
 
 ## 发布新版本
 

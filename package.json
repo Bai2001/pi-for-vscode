@@ -2,7 +2,7 @@
   "name": "pi-for-vscode",
   "displayName": "pi for VSCode",
   "version": "0.12.1",
-  "description": "在编辑器区分屏打开 pi 终端，并把编辑器上下文注入 pi（个人自用）",
+  "description": "在辅助侧栏管理 pi 会话，于编辑器区打开原生终端，并注入编辑器上下文（个人自用）",
   "categories": [
     "AI",
     "Chat",
@@ -11,13 +11,20 @@
   "license": "MIT",
   "publisher": "local",
   "type": "module",
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.cjs",
   "scripts": {
     "vscode:prepublish": "npm run build",
     "build": "vp build",
     "watch": "vp build --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --experimental-strip-types --test \"src/**/*.test.ts\"",
     "package": "vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "@xterm/addon-serialize": "0.15.0-beta.292",
+    "@xterm/headless": "6.1.0-beta.292",
+    "@xterm/xterm": "6.1.0-beta.292",
+    "node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.4",
@@ -34,17 +41,42 @@
     "commands": [
       {
         "command": "pi-for-vscode.openTerminal",
-        "title": "pi：打开终端会话",
+        "title": "pi：打开会话",
         "icon": {
           "light": "media/pi.svg",
           "dark": "media/pi-dark.svg"
         }
       },
       {
+        "command": "pi-for-vscode.newSession",
+        "title": "pi：新建会话",
+        "icon": "$(add)"
+      },
+      {
         "command": "pi-for-vscode.checkUpdate",
         "title": "pi：检查更新"
       }
     ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "pi-for-vscode",
+          "title": "pi",
+          "icon": "media/pi.svg"
+        }
+      ]
+    },
+    "views": {
+      "pi-for-vscode": [
+        {
+          "type": "webview",
+          "id": "pi-for-vscode.sessionView",
+          "name": "会话",
+          "icon": "media/pi.svg",
+          "visibility": "collapsed"
+        }
+      ]
+    },
     "menus": {
       "editor/title": [
         {
@@ -61,6 +93,9 @@
       "commandPalette": [
         {
           "command": "pi-for-vscode.openTerminal"
+        },
+        {
+          "command": "pi-for-vscode.newSession"
         }
       ]
     },
@@ -78,10 +113,23 @@
           "minimum": 1,
           "description": "注入的选区最大行数（超出截断）"
         },
-        "pi-for-vscode.terminal.splitRight": {
-          "type": "boolean",
-          "default": true,
-          "description": "在编辑器区右侧分屏打开终端（false 则使用默认终端位置）"
+        "pi-for-vscode.command": {
+          "type": "string",
+          "default": "pi",
+          "description": "启动 pi 用的可执行文件名或绝对路径。保持 pi 即可自动探测（含 Windows 的 pi.cmd）"
+        },
+        "pi-for-vscode.terminal.closeBehavior": {
+          "type": "string",
+          "enum": [
+            "detach",
+            "stop"
+          ],
+          "enumDescriptions": [
+            "关闭终端只拆掉画面，pi 进程继续跑，可从列表重建终端",
+            "关闭终端时结束 pi 进程"
+          ],
+          "default": "detach",
+          "description": "关闭 pi 终端时的行为"
         },
         "pi-for-vscode.update.enabled": {
           "type": "boolean",
@@ -113,5 +161,8 @@
   "engines": {
     "node": ">=20",
     "vscode": "^1.110.0"
+  },
+  "allowScripts": {
+    "node-pty@*": true
   }
 }

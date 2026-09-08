@@ -3,6 +3,8 @@ src/**
 docs/**
 .github/**
 node_modules/**
+!node_modules/node-pty/**
+!node_modules/@xterm/**
 vite.config.ts
 tsconfig.json
 *.map

@@ -20,12 +20,7 @@ import {
   type BrowserIpcImage,
   type BrowserIpcResponse,
 } from "./browser-protocol.js";
-import {
-  getIdeSnapshot,
-  ideKeyFromMethod,
-  onIdeSnapshot,
-  type IdeSnapshotKey,
-} from "./ide-store.js";
+import { getIdeSnapshot, ideKeyFromMethod, onIdeSnapshot, type IdeSnapshotKey } from "./store.js";
 
 export interface BrowserIpcHandle {
   readonly env: Record<string, string>;

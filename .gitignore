@@ -4,3 +4,5 @@ dist/
 .DS_Store
 Thumbs.db
 .tmp/
+# superpowers 技能会往这里写 plans/specs，不纳入仓库
+docs/superpowers/
