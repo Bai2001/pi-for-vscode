@@ -1,10 +1,7 @@
 // VSCode 宿主侧：named pipe 服务，把 pi 的浏览器工具请求转到 vscode.lm.invokeTool。
-import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { chmod } from "node:fs/promises";
 import net from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import * as vscode from "vscode";
 import {
   adaptArgs,
@@ -20,6 +17,7 @@ import {
   type BrowserIpcImage,
   type BrowserIpcResponse,
 } from "./browser-protocol.js";
+import { ipcIdentityForWorkspace, pipePath } from "./ipc-endpoint.js";
 import { getIdeSnapshot, ideKeyFromMethod, onIdeSnapshot, type IdeSnapshotKey } from "./store.js";
 
 export interface BrowserIpcHandle {
@@ -29,17 +27,6 @@ export interface BrowserIpcHandle {
 
 const AUTO_APPROVE_ASKED = "browser.autoApprovePrompted";
 const ENABLE_TOOLS_ASKED = "browser.enableChatToolsPrompted";
-
-function pipePath(id: string): string {
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\pi-for-vscode-browser-${id}`;
-  }
-  return join(tmpdir(), `pi-for-vscode-browser-${id}.sock`);
-}
-
-function newToken(): string {
-  return randomBytes(24).toString("base64url");
-}
 
 function builtinToolNames(): Set<string> {
   return new Set(vscode.lm.tools.map((t) => t.name));
@@ -171,9 +158,9 @@ function pushSubscriber(sub: IdeSubscriber, data: unknown, subscribers: Set<IdeS
 }
 
 export function startBrowserIpc(): BrowserIpcHandle {
-  const id = randomUUID().replace(/-/g, "").slice(0, 16);
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const { id, token } = ipcIdentityForWorkspace(folder);
   const path = pipePath(id);
-  const token = newToken();
   const subscribers = new Set<IdeSubscriber>();
   const unsubscribe = onIdeSnapshot((key, value) => {
     const data = idePushData(key, value);
@@ -203,21 +190,30 @@ export function startBrowserIpc(): BrowserIpcHandle {
     socket.on("error", () => undefined);
   });
 
-  if (process.platform !== "win32" && existsSync(path)) {
-    try {
-      unlinkSync(path);
-    } catch {
-      /* 忽略陈旧 socket */
+  let attempts = 0;
+  const listen = () => {
+    if (process.platform !== "win32" && existsSync(path)) {
+      try {
+        unlinkSync(path);
+      } catch {
+        /* 忽略陈旧 socket */
+      }
     }
-  }
-
-  server.listen(path);
-  if (process.platform !== "win32") {
-    void chmod(path, 0o600).catch(() => undefined);
-  }
-  server.on("error", (err) => {
+    server.listen(path, () => {
+      if (process.platform !== "win32") {
+        void chmod(path, 0o600).catch(() => undefined);
+      }
+    });
+  };
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE" && attempts < 15) {
+      attempts += 1;
+      setTimeout(listen, 80);
+      return;
+    }
     console.error("[pi-for-vscode] 浏览器 named pipe 监听失败:", err);
   });
+  listen();
 
   return {
     env: {
